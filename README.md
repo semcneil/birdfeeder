@@ -96,16 +96,12 @@ Please install libraries and configure the board before doing this step.
    
 Since we haven't connected any of the other components this will likely fail or do nothing. Steps 7-9 are still important though because after installing all the electronics, it will be difficult to access the USB-C port on the microcontroller.
 
-
-## Mounting the Electronics
-In order to protect the electronics and ensure that they do not interfere with each other, it is important to mount the components in a secure fashion.
-WIP
-
 ## Wiring the Electronics
 The order in which you connect the electronics should not matter. For the STEMMA QT Cable ensure that it is properly oriented by checking that the holes at the end of the cable match the pins in the ports.
 1.	Connect a STEMMA QT Cable to the microcontroller and the Load Cell ADC. The connection point can be found near the center of the board. The connection point for the Load Cell ADC is found on either end of the board.
-2.	Connect another STEMMA QT Cable to the remaining connection point on the Load Cell ADC and plug the other end to the Temperature + Humidity Sensor. Again, connections for the Temperature + Humidity Sensor are found on either end of the board.
 3.	Insert 3 wires into the headers (The black piece of plastic on top of the board with a series of holes) found on the microcontroller. The wires go into the GND, USB, and RX pins of the header.
 4.	On the RFID Reader board, connect the following wires to the following pins: GND wire to GND pin, USB wire to 5V pin, and RX wire to TX0 pin.
 
-
+|![Wiring Diagram](https://github.com/semcneil/birdfeeder/blob/main/docs/Bird%20Feeder%20Diagram.jpg)|
+|:-:|
+| *Basic Diagram of the wiring layout for the base components in the BIRD FEEDER* |
