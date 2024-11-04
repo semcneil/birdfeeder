@@ -64,14 +64,18 @@ The code is developed to use these specific electronics. Ordering other electron
 |RFID Reader Kit| https://handsontec.com/index.php/product/hz-1050-wiegand-125khz-rfid-reader-kit/|1|
 |Load Cell| https://www.sparkfun.com/products/14727|1|
 |Load Cell ADC|https://www.adafruit.com/product/4538 |1|
-|Mounting Screws|https://www.adafruit.com/product/3299|1|
+|Mounting Screws & Standoff Set|https://www.adafruit.com/product/3299|1|
 |STEMMA QT Cables|https://www.adafruit.com/product/4210|2|
 |ESP32-S3 Feather|https://www.adafruit.com/product/5477|1|
 |SD Add-on|https://www.adafruit.com/product/2922|1|
 |Coin Cell Battery|https://www.adafruit.com/product/380|1|
 |Stacking Headers|https://www.adafruit.com/product/2830|1|
+|Female Headers|https://www.adafruit.com/product/2886|1|
 |Temperature + Humidity Sensor|https://www.adafruit.com/product/4566|1|
-|microSD Card|https://www.amazon.com/MicroSD-Memory-Class10-SDAdapter-Reader/dp/B07R3QRGGF|1|
+|MicroSD Card|https://www.amazon.com/MicroSD-Memory-Class10-SDAdapter-Reader/dp/B07R3QRGGF|1|
+|Jumper Wires|https://a.co/d/4cGIVyl|1|
+
+*Note: Only 1 set of jumper wires is needed to build multiple units*
 
 ## Configuring the Arduino IDE
 Now that we have the Arduino IDE and our ESP32 on hand installed we have to configure the options so that the code can be uploaded to our microcontroller.
