@@ -1,3 +1,5 @@
+#include "arduino_secrets.h"
+
 
 /* rtcLoggingWifi.ino
 
@@ -41,7 +43,9 @@ int timeZone = 0;  // UTC-0
 SdFat SD;  // required with SdFat.h, not SD.h
 SdFile myFile;  // not sure why SdFile and not just File
 File32 myFileLoadCell;
+File32 myFileHousekeeping;
 String fname = "/settings.txt";  // forward slash critical for ESP32 function
+String fname2;
 String baseName = "/data";
 String ext = ".csv";
 int lastFileNum = 0;
@@ -164,7 +168,7 @@ void handleRoot0() {
         "</form>"
         "<br>"
         "<form action=\"/timeZoneForm\" method=\"get\">"
-          "<label for=\"timeZoneValue\">Timezone UTC-(#):</label>"
+          "<label for=\"timeZoneValue\">Timezone UTC(#):</label>"
           "<input type=\"text\" id=\"timeZoneValue\" name=\"timeZoneValue\">"
           "<input type=\"submit\" value=\"Submit\">"
         "</form>"
@@ -527,10 +531,10 @@ bool tempHumidityInit() {
   }  
 }
 
-String findFname() {
-  String fname = baseName + String(lastFileNum) + ext;
+String findFname(String name) {
+  String fname = name + String(lastFileNum) + ext;
   while(SD.exists(fname)) {
-    fname = baseName + String(++lastFileNum) + ext;
+    fname = name + String(++lastFileNum) + ext;
   }
   return(fname);
 }
@@ -610,6 +614,7 @@ void handleForm(WebServer *server, String inputName) {
 
 void checkWifi(int retryConnect = 1, int retryInterval = 0) {
   // Checks for WiFi availability and connects to it.
+  String outStr = "";
   static unsigned long previousMillis = 0;
   unsigned long currentMillis = millis();
   if (((currentMillis - previousMillis) >= retryInterval) && (WiFi.status() !=WL_CONNECTED)) {
@@ -626,16 +631,21 @@ void checkWifi(int retryConnect = 1, int retryInterval = 0) {
     }
   
     if(WiFi.status() == WL_CONNECTED) {
-      Serial.println("");
-      Serial.print("Connected to \"");
-      Serial.print(ssid);
-      Serial.print("\", IP address: ");
-      Serial.println(WiFi.localIP());
+      // outStr += "\n";
+      outStr += "Connected to \"";
+      outStr += ssid;
+      outStr += "\", IP address: ";
+      outStr += WiFi.localIP();
+      // outStr += "\n";
+      Serial.println(outStr);
+      housekeepWrite("$Network",outStr);
       syncRTCTime();
     } else {
       WiFi.disconnect();
-      Serial.print("Failed to connect to WiFi access point ");
-      Serial.println(ssid);
+      outStr += "Failed to connect to WiFi access point ";
+      outStr += ssid;
+      Serial.print(outStr);
+      housekeepWrite("$Error",outStr);
     }
   }
 }
@@ -678,6 +688,7 @@ void updateSettings() {
 }
 
 void syncRTCTime() {
+  String outStr = "Old RTC Time: ";
   if (WiFi.status() == WL_CONNECTED) {
     // Configure NTP
     configTime(timeZone * 3600, 0, "pool.ntp.org", "time.nist.gov");  //Add Variables to configure time zones and daylight savings offset
@@ -686,14 +697,22 @@ void syncRTCTime() {
     struct tm time0;
     if (getLocalTime(&time0)) {
       DateTime time1(time0.tm_year + 1900, time0.tm_mon + 1, time0.tm_mday, time0.tm_hour, time0.tm_min, time0.tm_sec);
+
+      outStr += curTimeStr(rtc.now());
+      outStr += ", New RTC Time: ";
+      outStr += String(time1.month()) + "/" + String(time1.day()) + "/" + String(time1.year()) + " " + String(time1.hour()) + ":" + String(time1.minute()) + ":" + String(time1.second()) + "(UTC)";
+      housekeepWrite("$Time",outStr);
+      
       rtc.adjust(time1);
       Serial.print("Sync RTC time success: ");
       Serial.println(String(time1.month()) + "/" + String(time1.day()) + "/" + String(time1.year()) + " " + String(time1.hour()) + ":" + String(time1.minute()) + ":" + String(time1.second()) + " (UTC)");
     } else {
       Serial.println("Error: Sync RTC time failed. Unable to obtain time from NTP server.");
+      housekeepWrite("$Error","Error: Sync RTC time failed. Unable to obtain time from NTP server.");
     }
   } else {
     Serial.println("Error: Sync RTC time failed. Not Connected to WiFi.");
+    housekeepWrite("$Error","Error: Sync RTC time failed. Not Connected to WiFi.");
   }
 }
 
@@ -771,6 +790,7 @@ void readBatteryInfo() {
   float current_mA2 = 0;
   float loadvoltage2 = 0;
   float power_mW2 = 0;
+  String outStr = "";
 
   shuntvoltage1 = solar1.getShuntVoltage_mV();
   busvoltage1 = solar1.getBusVoltage_V();
@@ -784,130 +804,21 @@ void readBatteryInfo() {
   power_mW2 = solar2.getPower_mW();
   loadvoltage2 = busvoltage2 + (shuntvoltage2 / 1000);
   
-  Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
-  Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
-  Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
-  Serial.print("Currents:       "); Serial.print(current_mA1); Serial.print(" mA, "); Serial.print(current_mA2); Serial.println(" mA");
-  Serial.print("Powers:         "); Serial.print(power_mW1); Serial.print(" mW, "); Serial.print(power_mW2); Serial.println(" mW");
-  Serial.println("");
+  // Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
+  // Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
+  // Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
+  // Serial.print("Currents:       "); Serial.print(current_mA1); Serial.print(" mA, "); Serial.print(current_mA2); Serial.println(" mA");
+  // Serial.print("Powers:         "); Serial.print(power_mW1); Serial.print(" mW, "); Serial.print(power_mW2); Serial.println(" mW");
+  // Serial.println("");
+  // out = "Bus Voltages:   "; out += busvoltage1;out += " V, ";out += busvoltage2; out +=" V\n";
+  // out += "Shunt Voltages: "; out += shuntvoltage1;out += " mV, ";out += shuntvoltage2; out +=" mV\n";
+  // out += "Load Voltages:  "; out += loadvoltage1;out += " V, ";out += loadvoltage2; out +=" V\n";
+  // out += "Currents:       "; out += current_mA1;out += " mA, ";out += current_mA2; out +=" mA\n";
+  outStr += "Powers:         "; outStr += power_mW1;outStr += " mW, ";outStr += power_mW2; outStr +=" mW";
+  housekeepWrite("$Power",outStr);
 }
 
-void setup(void) {
-  pinMode(led, OUTPUT);
-  digitalWrite(led, 0);
-  pinMode(I2C_PWR_PIN, OUTPUT);
-  digitalWrite(I2C_PWR_PIN, HIGH);  // make sure I2C power is on
-  // Open serial communications and wait for port to open:
-  Serial.begin(115200);
-  Serial1.begin(9600);  // serial port for RFID data
-  delay(4000);  // wait for serial ports to start if they exist
-
-  Serial.println("Bird feeder Wifi starting");
-  delay(1000);
-
-  // RTC initialization
-  if (! rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    Serial.flush();
-  } else {
-    rtc.start();
-  }
-
-  loadCellInit();
-  tempHumidityInit();
-
-  SdFile::dateTimeCallback(dateTime);  
-  Serial.print("Initializing SD card...");
-  if (!SD.begin(SD_CS)) {
-    Serial.println("initialization failed!");
-  } else {
-    Serial.println("initialization done.");
-  }
-  loadSettings("/settings.txt");  // load settings from SD card
-
-  fname = findFname();
-  Serial.println("Filename: " + fname);
-  myFileLoadCell = SD.open(fname, O_WRITE | O_CREAT);
-  if(myFileLoadCell) {
-    myFileLoadCell.println("datetime,time(ms),LoadCell,RFIDTag");
-    myFileLoadCell.close();
-  } else {
-    Serial.println("Failed to open file");
-  }
-
-  WiFi.mode(WIFI_AP_STA);
-  checkWifi(wifiMaxCheckTimes);
-  
-  if (!WiFi.softAP(apssid, appassword)) {
-    Serial.println("failed to start softAP");
-    for (;;) {
-        digitalWrite(led, 1);
-        delay(100);
-        digitalWrite(led, 0);
-        delay(100);
-    }
-  }
-  Serial.print("Soft AP SSID: \"");
-  Serial.print(apssid);
-  Serial.print("\", IP address: ");
-  Serial.println(WiFi.softAPIP());
-
-  if (MDNS.begin(apssid)) {
-    Serial.println("MDNS responder started");
-  }
-
-  server0 = new WebServer(80);
-  server1 = new WebServer(WiFi.localIP(), 8081);
-  server2 = new WebServer(WiFi.softAPIP(), 8081);
-
-  server0->on("/", handleRoot0);
-  server1->on("/", handleRoot1);
-  server2->on("/", handleRoot2);
-  
-  server0->on("/fileex", handleFileExample0);
-  server0->on("/download", handleDownload0);
-  server0->on("/rtcTime", HTTP_GET, handleRTCTime);
-
-  // Handle inputs
-  server0->on("/rtcForm", HTTP_GET, []() { handleForm(server0, "rtcValue"); });
-  server0->on("/timeZoneForm", HTTP_GET, []() { handleForm(server0, "timeZoneValue"); });
-  server0->on("/wifiSSIDForm", HTTP_GET, []() { handleForm(server0, "wifiSSIDValue"); });
-  server0->on("/wifiPasswordForm", HTTP_GET, []() { handleForm(server0, "wifiPasswordValue"); });
-  server0->on("/apSSIDForm", HTTP_GET, []() { handleForm(server0, "apSSIDValue"); });
-  server0->on("/apPasswordForm", HTTP_GET, []() { handleForm(server0, "apPasswordValue"); });
-  server0->on("/restart", HTTP_POST, []() {
-    handleRoot(server0, "Restarting ESP32-S3");
-    ESP.restart();
-  });
-
-  server0->onNotFound(handleNotFound0);
-  server1->onNotFound(handleNotFound1);
-  server2->onNotFound(handleNotFound2);
-
-  server0->begin();
-  Serial.println("HTTP server0 started");
-  server1->begin();
-  Serial.println("HTTP server1 started");
-  server2->begin();
-  Serial.println("HTTP server2 started");
-
-  Serial.printf("SSID: %s\n\thttp://", ssid); Serial.print(WiFi.localIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.localIP()); Serial.println(":8081");
-  Serial.printf("SSID: %s\n\thttp://", apssid); Serial.print(WiFi.softAPIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.softAPIP()); Serial.println(":8081");
-  Serial.printf("Any of the above SSIDs\n\thttp://");Serial.print(apssid);Serial.print(".local:80\n\thttp://");Serial.print(apssid);Serial.print(".local:8081\n");
-}
-
-void loop(void) {
-  // Handle Webserver
-  server0->handleClient();
-  server1->handleClient();
-  server2->handleClient();
-  delay(2);//allow the cpu to switch to other tasks
-
-  checkWifi(wifiMaxCheckTimes/2, 10000); //Just cause :3
-
-  sequenceBuzzLED(3,200,RED);
-  readBatteryInfo();
-
+void loadRFIDWrite() {
   static unsigned long lastCharTime = 0; // millis of last character
   static unsigned long tagReadWaitTime = 300;   // ms to wait before newline for RFID tag read finish
   static unsigned long lastTagReadTime = 0;  // millis of last tag read
@@ -998,4 +909,152 @@ void loop(void) {
     }
     tagNum = ""; // reset tagNum
   }
+}
+
+void housekeepWrite(String sentenceID, String data) {
+  if(!data.isEmpty()) {
+    myFileHousekeeping = SD.open(fname2, O_WRITE | O_APPEND);
+    if(myFileHousekeeping) {
+      myFileHousekeeping.print(sentenceID);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(data);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(curTimeStr(rtc.now()));
+      myFileHousekeeping.println("");
+      myFileHousekeeping.close();
+    } else {
+      Serial.println("Failed to open housekeeping file");
+    }
+  }
+}
+
+void setup(void) {
+  pinMode(led, OUTPUT);
+  digitalWrite(led, 0);
+  pinMode(I2C_PWR_PIN, OUTPUT);
+  digitalWrite(I2C_PWR_PIN, HIGH);  // make sure I2C power is on
+  // Open serial communications and wait for port to open:
+  Serial.begin(115200);
+  Serial1.begin(9600);  // serial port for RFID data
+  delay(4000);  // wait for serial ports to start if they exist
+
+  Serial.println("Bird feeder Wifi starting");
+  delay(1000);
+
+  // RTC initialization
+  if (! rtc.begin()) {
+    Serial.println("Couldn't find RTC");
+    Serial.flush();
+  } else {
+    rtc.start();
+  }
+
+  loadCellInit();
+  tempHumidityInit();
+
+  SdFile::dateTimeCallback(dateTime);  
+  Serial.print("Initializing SD card...");
+  if (!SD.begin(SD_CS)) {
+    Serial.println("initialization failed!");
+  } else {
+    Serial.println("initialization done.");
+  }
+  loadSettings("/settings.txt");  // load settings from SD card
+
+  //Print File headings
+  fname = findFname(baseName);
+  Serial.println("Filename: " + fname);
+  myFileLoadCell = SD.open(fname, O_WRITE | O_CREAT);
+  if(myFileLoadCell) {
+    myFileLoadCell.println("datetime,time(ms),LoadCell,RFIDTag");
+    myFileLoadCell.close();
+  } else {
+    Serial.println("Failed to open file");
+  }
+
+  fname2 = findFname("/log");
+  Serial.println("Filename: " + fname2);
+  myFileHousekeeping = SD.open(fname2, O_WRITE | O_CREAT);
+  if(myFileHousekeeping) {
+    myFileHousekeeping.println("$sentenceID, Data, Date and Time");
+    myFileHousekeeping.close();
+  } else {
+    Serial.println("Failed to open file");
+  }
+
+  WiFi.mode(WIFI_AP_STA);
+  checkWifi(wifiMaxCheckTimes);
+  
+  if (!WiFi.softAP(apssid, appassword)) {
+    Serial.println("failed to start softAP");
+    for (;;) {
+        digitalWrite(led, 1);
+        delay(100);
+        digitalWrite(led, 0);
+        delay(100);
+    }
+  }
+  Serial.print("Soft AP SSID: \"");
+  Serial.print(apssid);
+  Serial.print("\", IP address: ");
+  Serial.println(WiFi.softAPIP());
+
+  if (MDNS.begin(apssid)) {
+    Serial.println("MDNS responder started");
+  }
+
+  server0 = new WebServer(80);
+  server1 = new WebServer(WiFi.localIP(), 8081);
+  server2 = new WebServer(WiFi.softAPIP(), 8081);
+
+  server0->on("/", handleRoot0);
+  server1->on("/", handleRoot1);
+  server2->on("/", handleRoot2);
+  
+  server0->on("/fileex", handleFileExample0);
+  server0->on("/download", handleDownload0);
+  server0->on("/rtcTime", HTTP_GET, handleRTCTime);
+
+  // Handle inputs
+  server0->on("/rtcForm", HTTP_GET, []() { handleForm(server0, "rtcValue"); });
+  server0->on("/timeZoneForm", HTTP_GET, []() { handleForm(server0, "timeZoneValue"); });
+  server0->on("/wifiSSIDForm", HTTP_GET, []() { handleForm(server0, "wifiSSIDValue"); });
+  server0->on("/wifiPasswordForm", HTTP_GET, []() { handleForm(server0, "wifiPasswordValue"); });
+  server0->on("/apSSIDForm", HTTP_GET, []() { handleForm(server0, "apSSIDValue"); });
+  server0->on("/apPasswordForm", HTTP_GET, []() { handleForm(server0, "apPasswordValue"); });
+  server0->on("/restart", HTTP_POST, []() {
+    handleRoot(server0, "Restarting ESP32-S3");
+    ESP.restart();
+  });
+
+  server0->onNotFound(handleNotFound0);
+  server1->onNotFound(handleNotFound1);
+  server2->onNotFound(handleNotFound2);
+
+  server0->begin();
+  Serial.println("HTTP server0 started");
+  server1->begin();
+  Serial.println("HTTP server1 started");
+  server2->begin();
+  Serial.println("HTTP server2 started");
+
+  Serial.printf("SSID: %s\n\thttp://", ssid); Serial.print(WiFi.localIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.localIP()); Serial.println(":8081");
+  Serial.printf("SSID: %s\n\thttp://", apssid); Serial.print(WiFi.softAPIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.softAPIP()); Serial.println(":8081");
+  Serial.printf("Any of the above SSIDs\n\thttp://");Serial.print(apssid);Serial.print(".local:80\n\thttp://");Serial.print(apssid);Serial.print(".local:8081\n");
+}
+
+void loop(void) {
+  // Handle Webserver
+  server0->handleClient();
+  server1->handleClient();
+  server2->handleClient();
+  delay(2);//allow the cpu to switch to other tasks
+
+  checkWifi(wifiMaxCheckTimes/2, 10000); //Just cause :3
+
+  sequenceBuzzLED(3,200,RED);
+  readBatteryInfo();
+
+  loadRFIDWrite();
+
 }
