@@ -54,6 +54,9 @@ Installing libraries is an important step in ensuring that code runs as it shoul
 |Adafruit NAU7802 Library| Adafruit| Yes|
 |RTClib| Adafruit| Yes|
 |Boulder Flight Systems Circular Buffer| Brian Taylor| Yes|
+|PCA9536D| Gavin Hurlbut| Yes|
+|Adafruit INA219| Adafruit| Yes|
+|NTPClient| Fabrice Weinberg| Yes|
 
 ## Ordering Parts
 The code is developed to use these specific electronics. Ordering other electronics may result in unexpected consequences. Before ordering different parts, please consult with the Embry-Riddle Professors or modify the code to accommodate the changes.
