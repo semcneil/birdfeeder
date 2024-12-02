@@ -73,7 +73,7 @@ The code is developed to use these specific electronics. Ordering other electron
 |Female Headers|https://www.adafruit.com/product/2886|1|
 |Temperature + Humidity Sensor|https://www.adafruit.com/product/4566|1|
 |MicroSD Card|https://www.amazon.com/MicroSD-Memory-Class10-SDAdapter-Reader/dp/B07R3QRGGF|1|
-|Jumper Wires*|https://a.co/d/4cGIVyl|1|
+|Jumper Wires*|[https://a.co/d/4cGIVyl](https://a.co/d/iKBbOFw)|1|
 
 \* Only one order is needed to build multiple units
 
