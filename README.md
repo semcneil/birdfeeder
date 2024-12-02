@@ -75,7 +75,7 @@ The code is developed to use these specific electronics. Ordering other electron
 |MicroSD Card|https://www.amazon.com/MicroSD-Memory-Class10-SDAdapter-Reader/dp/B07R3QRGGF|1|
 |Jumper Wires*|https://a.co/d/4cGIVyl|1|
 
-* Only one order is needed to build multiple units
+\* Only one order is needed to build multiple units
 
 ## Configuring the Arduino IDE
 Now that we have the Arduino IDE and our ESP32 on hand installed we have to configure the options so that the code can be uploaded to our microcontroller.
