@@ -112,3 +112,20 @@ The order in which you connect the electronics should not matter. For the STEMMA
 |![Wiring Diagram](https://github.com/semcneil/birdfeeder/blob/main/docs/Bird%20Feeder%20Diagram.jpg)|
 |:-:|
 | *Basic Diagram of the wiring layout for the base components in the BIRD FEEDER* |
+
+
+## I2C Addresses
+|Part Name|Address|Location|
+|---------|----|---------------------------:|
+|NAU7802 Loadcell ADC|0x2A|Separate Adafruit board|
+|AHT20 Temperature and Humidity|0x38|Separate Adafruit board|
+|PCF8523 RTC|0x68|Adalogger RTC + SD Board|
+|MAX17048 LiPo charger|0x36|ESP32-S3 Feather|
+|INA219 Solar1 Input Voltage/Current|0x40|Solar Joining board|
+|INA219 Solar2 Input Voltage/Current|0x44|Solar Joining board|
+|INA219 Power/Data Input Voltage/Current|0x42|Power Joining board|
+|INA219 Power Input Voltage/Current|0x45|Power Joining board|
+|PCA9536 Drives LEDs and Buzzer|0x41|Solar Joining board|
+|BMP390 Atmospheric Pressure/Temperature|0x77|Power Joining board|
+|SHT40 Temperature/Humidity|0x46|Power Joining board|
+|MLX90393 3 axis Magentometer|0x0C|Power Joining board|
