@@ -28,6 +28,8 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
+#define BATT_LOG_PERIOD 5000  // ms between battery logs
+
 const char* default_ssid = "EagleNet";
 const char* default_password = "";
 const char* default_apssid = "birdfeeder";
@@ -813,70 +815,75 @@ void sequenceBuzzLED(int iterations, int blinkDuration, int color) {
 }
 
 void readBatteryInfo() {
-  float shuntvoltage1 = 0;
-  float busvoltage1 = 0;
-  float current_mA1 = 0;
-  float loadvoltage1 = 0;
-  float power_mW1 = 0;
+  static unsigned long lastTime = millis();
+  unsigned long curTime = millis();
+  if(curTime - lastTime > BATT_LOG_PERIOD) {
+    lastTime = curTime;
+    float shuntvoltage1 = 0;
+    float busvoltage1 = 0;
+    float current_mA1 = 0;
+    float loadvoltage1 = 0;
+    float power_mW1 = 0;
 
-  float shuntvoltage2 = 0;
-  float busvoltage2 = 0;
-  float current_mA2 = 0;
-  float loadvoltage2 = 0;
-  float power_mW2 = 0;
+    float shuntvoltage2 = 0;
+    float busvoltage2 = 0;
+    float current_mA2 = 0;
+    float loadvoltage2 = 0;
+    float power_mW2 = 0;
 
-  float shuntvoltage3 = 0;
-  float busvoltage3 = 0;
-  float current_mA3 = 0;
-  float loadvoltage3 = 0;
-  float power_mW3 = 0;
+    float shuntvoltage3 = 0;
+    float busvoltage3 = 0;
+    float current_mA3 = 0;
+    float loadvoltage3 = 0;
+    float power_mW3 = 0;
 
-  float shuntvoltage4 = 0;
-  float busvoltage4 = 0;
-  float current_mA4 = 0;
-  float loadvoltage4 = 0;
-  float power_mW4 = 0;
-  String outStr = "";
+    float shuntvoltage4 = 0;
+    float busvoltage4 = 0;
+    float current_mA4 = 0;
+    float loadvoltage4 = 0;
+    float power_mW4 = 0;
+    String outStr = "";
 
-  shuntvoltage1 = solar1.getShuntVoltage_mV();
-  busvoltage1 = solar1.getBusVoltage_V();
-  current_mA1 = solar1.getCurrent_mA();
-  power_mW1 = solar1.getPower_mW();
-  loadvoltage1 = busvoltage1 + (shuntvoltage1 / 1000);
-  
-  shuntvoltage2 = solar2.getShuntVoltage_mV();
-  busvoltage2 = solar2.getBusVoltage_V();
-  current_mA2 = solar2.getCurrent_mA();
-  power_mW2 = solar2.getPower_mW();
-  loadvoltage2 = busvoltage2 + (shuntvoltage2 / 1000);
-  
-  shuntvoltage3 = onlyPwr.getShuntVoltage_mV();
-  busvoltage3 = onlyPwr.getBusVoltage_V();
-  current_mA3 = onlyPwr.getCurrent_mA();
-  power_mW3 = onlyPwr.getPower_mW();
-  loadvoltage3 = busvoltage3 + (shuntvoltage3 / 1000);
-  
-  shuntvoltage4 = dataPwr.getShuntVoltage_mV();
-  busvoltage4 = dataPwr.getBusVoltage_V();
-  current_mA4 = dataPwr.getCurrent_mA();
-  power_mW4 = dataPwr.getPower_mW();
-  loadvoltage4 = busvoltage4 + (shuntvoltage4 / 1000);
-  
-  // Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
-  // Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
-  // Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
-  // Serial.print("Currents:       "); Serial.print(current_mA1); Serial.print(" mA, "); Serial.print(current_mA2); Serial.println(" mA");
-  // Serial.print("Powers:         "); Serial.print(power_mW1); Serial.print(" mW, "); Serial.print(power_mW2); Serial.println(" mW");
-  // Serial.println("");
-  // out = "Bus Voltages:   "; out += busvoltage1;out += " V, ";out += busvoltage2; out +=" V\n";
-  // out += "Shunt Voltages: "; out += shuntvoltage1;out += " mV, ";out += shuntvoltage2; out +=" mV\n";
-  // out += "Load Voltages:  "; out += loadvoltage1;out += " V, ";out += loadvoltage2; out +=" V\n";
-  // out += "Currents:       "; out += current_mA1;out += " mA, ";out += current_mA2; out +=" mA\n";
-  outStr += "Powers(mw),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += power_mW1;outStr += ",";outStr += power_mW2; outStr += ",";outStr += power_mW3; outStr +=",";outStr += power_mW4;
-  housekeepWrite("$Power",outStr);
-  outStr = "";
-  outStr += "Voltages(V),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += busvoltage1;outStr += ",";outStr += busvoltage2; outStr +=",";outStr += busvoltage3; outStr +=",";outStr += busvoltage4;
-  housekeepWrite("$Voltage",outStr);
+    shuntvoltage1 = solar1.getShuntVoltage_mV();
+    busvoltage1 = solar1.getBusVoltage_V();
+    current_mA1 = solar1.getCurrent_mA();
+    power_mW1 = solar1.getPower_mW();
+    loadvoltage1 = busvoltage1 + (shuntvoltage1 / 1000);
+    
+    shuntvoltage2 = solar2.getShuntVoltage_mV();
+    busvoltage2 = solar2.getBusVoltage_V();
+    current_mA2 = solar2.getCurrent_mA();
+    power_mW2 = solar2.getPower_mW();
+    loadvoltage2 = busvoltage2 + (shuntvoltage2 / 1000);
+    
+    shuntvoltage3 = onlyPwr.getShuntVoltage_mV();
+    busvoltage3 = onlyPwr.getBusVoltage_V();
+    current_mA3 = onlyPwr.getCurrent_mA();
+    power_mW3 = onlyPwr.getPower_mW();
+    loadvoltage3 = busvoltage3 + (shuntvoltage3 / 1000);
+    
+    shuntvoltage4 = dataPwr.getShuntVoltage_mV();
+    busvoltage4 = dataPwr.getBusVoltage_V();
+    current_mA4 = dataPwr.getCurrent_mA();
+    power_mW4 = dataPwr.getPower_mW();
+    loadvoltage4 = busvoltage4 + (shuntvoltage4 / 1000);
+    
+    // Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
+    // Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
+    // Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
+    // Serial.print("Currents:       "); Serial.print(current_mA1); Serial.print(" mA, "); Serial.print(current_mA2); Serial.println(" mA");
+    // Serial.print("Powers:         "); Serial.print(power_mW1); Serial.print(" mW, "); Serial.print(power_mW2); Serial.println(" mW");
+    // Serial.println("");
+    // out = "Bus Voltages:   "; out += busvoltage1;out += " V, ";out += busvoltage2; out +=" V\n";
+    // out += "Shunt Voltages: "; out += shuntvoltage1;out += " mV, ";out += shuntvoltage2; out +=" mV\n";
+    // out += "Load Voltages:  "; out += loadvoltage1;out += " V, ";out += loadvoltage2; out +=" V\n";
+    // out += "Currents:       "; out += current_mA1;out += " mA, ";out += current_mA2; out +=" mA\n";
+    outStr += "Powers(mw),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += power_mW1;outStr += ",";outStr += power_mW2; outStr += ",";outStr += power_mW3; outStr +=",";outStr += power_mW4;
+    housekeepWrite("$Power",outStr);
+    outStr = "";
+    outStr += "Voltages(V),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += busvoltage1;outStr += ",";outStr += busvoltage2; outStr +=",";outStr += busvoltage3; outStr +=",";outStr += busvoltage4;
+    housekeepWrite("$Voltage",outStr);
+  }
 }
 
 void loadRFIDWrite() {
