@@ -58,6 +58,8 @@ const uint32_t bufLen = 100;
 
 Adafruit_INA219 solar1(0x40);
 Adafruit_INA219 solar2(0x44);
+Adafruit_INA219 onlyPwr(0x42);
+Adafruit_INA219 dataPwr(0x45);
 PCA9536 buzzLED;
 #define RED 0
 #define GRN 1
@@ -80,6 +82,15 @@ const int led = LED_BUILTIN;
 #else
 const int led = 13;
 #endif
+
+String zeroPad(int ii){
+  String outStr = "";
+  if(ii < 10) {
+    outStr += "0";
+  }
+  outStr += String(ii);
+  return(outStr);
+}
 
 void handleRoot(WebServer *server, const String &content) {
   digitalWrite(led, 1);
@@ -547,17 +558,17 @@ String curTimeStr(DateTime now) {
   //DateTime now = rtc.now();
 
   String outStr = "";
-  outStr += now.month();
+  outStr += zeroPad(now.month());
   outStr += '/';
-  outStr += now.day();
+  outStr += zeroPad(now.day());
   outStr += '/';
   outStr += now.year();
   outStr += " ";
-  outStr += now.hour();
+  outStr += zeroPad(now.hour());
   outStr += ':';
-  outStr += now.minute();
+  outStr += zeroPad(now.minute());
   outStr += ':';
-  outStr += now.second();
+  outStr += zeroPad(now.second());
   
   return(outStr);
 }
@@ -621,7 +632,7 @@ void checkWifi(int retryConnect = 1, int retryInterval = 0) {
   String outStr = "";
   static unsigned long previousMillis = 0;
   unsigned long currentMillis = millis();
-  if (((currentMillis - previousMillis) >= retryInterval) && (WiFi.status() !=WL_CONNECTED)) {
+  if (((currentMillis - previousMillis) >= retryInterval) && (WiFi.status() != WL_CONNECTED)) {
     previousMillis = currentMillis;
     
     WiFi.begin(ssid, password);
@@ -636,10 +647,11 @@ void checkWifi(int retryConnect = 1, int retryInterval = 0) {
   
     if(WiFi.status() == WL_CONNECTED) {
       // outStr += "\n";
+      IPAddress curIP = WiFi.localIP();
       outStr += "Connected to \"";
       outStr += ssid;
       outStr += "\", IP address: ";
-      outStr += WiFi.localIP();
+      outStr += curIP.toString();
       // outStr += "\n";
       Serial.println(outStr);
       housekeepWrite("$Network",outStr);
@@ -696,22 +708,30 @@ void syncRTCTime() {
   if (WiFi.status() == WL_CONNECTED) {
     // Configure NTP
     timeClient.begin();
+    Serial.println("NTP Time set attempt");
+    delay(3000);
+    int nTries = 10;  // number of times to try updating RTC
+    int tryCount = 0; // counter for tries to update RTC
 
     // Wait for time to be set
-    if (timeClient.isTimeSet()) {
+    while (!timeClient.isTimeSet() && tryCount < nTries) {
+      Serial.print("NTP Try "); Serial.println(tryCount);
+      tryCount++;
       timeClient.update();
       unsigned long epochTime = timeClient.getEpochTime();
-      DateTime time1(epochTime);
+      DateTime time1(epochTime + timeZone*3600);
 
       outStr += curTimeStr(rtc.now());
       outStr += ", New RTC Time: ";
-      outStr += String(time1.month()) + "/" + String(time1.day()) + "/" + String(time1.year()) + " " + String(time1.hour()) + ":" + String(time1.minute()) + ":" + String(time1.second()) + "(UTC)";
+      outStr += zeroPad(time1.month()) + "/" + zeroPad(time1.day()) + "/" + String(time1.year()) + " " + zeroPad(time1.hour()) + ":" + zeroPad(time1.minute()) + ":" + zeroPad(time1.second()) + "(UTC)";
       housekeepWrite("$Time",outStr);
       
       rtc.adjust(time1);
       Serial.print("Sync RTC time success: ");
-      Serial.println(String(time1.month()) + "/" + String(time1.day()) + "/" + String(time1.year()) + " " + String(time1.hour()) + ":" + String(time1.minute()) + ":" + String(time1.second()) + " (UTC)");
-    } else {
+      Serial.println(zeroPad(time1.month()) + "/" + zeroPad(time1.day()) + "/" + String(time1.year()) + " " + zeroPad(time1.hour()) + ":" + zeroPad(time1.minute()) + ":" + zeroPad(time1.second()) + " (UTC)");
+      delay(500);
+    } 
+    if(tryCount >= 9) {
       Serial.println("Error: Sync RTC time failed. Unable to obtain time from NTP server.");
       housekeepWrite("$Error","Error: Sync RTC time failed. Unable to obtain time from NTP server.");
     }
@@ -742,6 +762,14 @@ void INA219Setup() {
     Serial.println("Failed to find solar2 INA219 chip");
     while (1) { delay(10); }
   }
+  if (!onlyPwr.begin()) {
+    Serial.println("Failed to find onlyPwr INA219 chip");
+    while (1) { delay(10); }
+  }
+  if (!dataPwr.begin()) {
+    Serial.println("Failed to find dataPwr INA219 chip");
+    while (1) { delay(10); }
+  }
   // To use a slightly lower 32V, 1A range (higher precision on amps):
   //ina219.setCalibration_32V_1A();
   // Or to use a lower 16V, 400mA range (higher precision on volts and amps):
@@ -770,6 +798,7 @@ void PCA9536BuzzSetup()
     // pinMode can be used to set an I/O as OUTPUT or INPUT
     buzzLED.pinMode(i, OUTPUT);
   }
+  sequenceBuzzLED(1, 100, GRN);
 }
 
 void sequenceBuzzLED(int iterations, int blinkDuration, int color) {
@@ -795,6 +824,18 @@ void readBatteryInfo() {
   float current_mA2 = 0;
   float loadvoltage2 = 0;
   float power_mW2 = 0;
+
+  float shuntvoltage3 = 0;
+  float busvoltage3 = 0;
+  float current_mA3 = 0;
+  float loadvoltage3 = 0;
+  float power_mW3 = 0;
+
+  float shuntvoltage4 = 0;
+  float busvoltage4 = 0;
+  float current_mA4 = 0;
+  float loadvoltage4 = 0;
+  float power_mW4 = 0;
   String outStr = "";
 
   shuntvoltage1 = solar1.getShuntVoltage_mV();
@@ -809,6 +850,18 @@ void readBatteryInfo() {
   power_mW2 = solar2.getPower_mW();
   loadvoltage2 = busvoltage2 + (shuntvoltage2 / 1000);
   
+  shuntvoltage3 = onlyPwr.getShuntVoltage_mV();
+  busvoltage3 = onlyPwr.getBusVoltage_V();
+  current_mA3 = onlyPwr.getCurrent_mA();
+  power_mW3 = onlyPwr.getPower_mW();
+  loadvoltage3 = busvoltage3 + (shuntvoltage3 / 1000);
+  
+  shuntvoltage4 = dataPwr.getShuntVoltage_mV();
+  busvoltage4 = dataPwr.getBusVoltage_V();
+  current_mA4 = dataPwr.getCurrent_mA();
+  power_mW4 = dataPwr.getPower_mW();
+  loadvoltage4 = busvoltage4 + (shuntvoltage4 / 1000);
+  
   // Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
   // Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
   // Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
@@ -819,8 +872,11 @@ void readBatteryInfo() {
   // out += "Shunt Voltages: "; out += shuntvoltage1;out += " mV, ";out += shuntvoltage2; out +=" mV\n";
   // out += "Load Voltages:  "; out += loadvoltage1;out += " V, ";out += loadvoltage2; out +=" V\n";
   // out += "Currents:       "; out += current_mA1;out += " mA, ";out += current_mA2; out +=" mA\n";
-  outStr += "Powers:         "; outStr += power_mW1;outStr += " mW, ";outStr += power_mW2; outStr +=" mW";
+  outStr += "Powers(mw),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += power_mW1;outStr += ",";outStr += power_mW2; outStr += ",";outStr += power_mW3; outStr +=",";outStr += power_mW4;
   housekeepWrite("$Power",outStr);
+  outStr = "";
+  outStr += "Voltages(V),Solar1,Solar2,onlyPwr,dataPwr:         "; outStr += busvoltage1;outStr += ",";outStr += busvoltage2; outStr +=",";outStr += busvoltage3; outStr +=",";outStr += busvoltage4;
+  housekeepWrite("$Voltage",outStr);
 }
 
 void loadRFIDWrite() {
@@ -941,6 +997,7 @@ void setup(void) {
   // Open serial communications and wait for port to open:
   Serial.begin(115200);
   Serial1.begin(9600);  // serial port for RFID data
+  PCA9536BuzzSetup();
   delay(4000);  // wait for serial ports to start if they exist
 
   Serial.println("Bird feeder Wifi starting");
@@ -952,11 +1009,13 @@ void setup(void) {
     Serial.flush();
   } else {
     rtc.start();
+    Serial.println("RTC Started");
   }
 
   loadCellInit();
   tempHumidityInit();
-
+  INA219Setup();
+  
   SdFile::dateTimeCallback(dateTime);  
   Serial.print("Initializing SD card...");
   if (!SD.begin(SD_CS)) {
@@ -981,14 +1040,14 @@ void setup(void) {
   Serial.println("Filename: " + fname2);
   myFileHousekeeping = SD.open(fname2, O_WRITE | O_CREAT);
   if(myFileHousekeeping) {
-    myFileHousekeeping.println("$sentenceID, Data, Date and Time");
+    myFileHousekeeping.println("$sentenceID,Data,Date and Time");
     myFileHousekeeping.close();
   } else {
     Serial.println("Failed to open file");
   }
 
   WiFi.mode(WIFI_AP_STA);
-  checkWifi(wifiMaxCheckTimes);
+  checkWifi(wifiMaxCheckTimes,500);
   
   if (!WiFi.softAP(apssid, appassword)) {
     Serial.println("failed to start softAP");
@@ -1046,6 +1105,7 @@ void setup(void) {
   Serial.printf("SSID: %s\n\thttp://", ssid); Serial.print(WiFi.localIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.localIP()); Serial.println(":8081");
   Serial.printf("SSID: %s\n\thttp://", apssid); Serial.print(WiFi.softAPIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.softAPIP()); Serial.println(":8081");
   Serial.printf("Any of the above SSIDs\n\thttp://");Serial.print(apssid);Serial.print(".local:80\n\thttp://");Serial.print(apssid);Serial.print(".local:8081\n");
+  sequenceBuzzLED(5,100,GRN);
 }
 
 void loop(void) {
@@ -1057,7 +1117,7 @@ void loop(void) {
 
   checkWifi(wifiMaxCheckTimes/2, 10000); //Just cause :3
 
-  sequenceBuzzLED(3,200,RED);
+  // sequenceBuzzLED(3,200,RED);
   readBatteryInfo();
 
   loadRFIDWrite();
