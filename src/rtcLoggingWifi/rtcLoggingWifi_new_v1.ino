@@ -24,11 +24,11 @@
 #include <PCA9536D.h>
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#include "Adafruit_BMP3XX.h"
+#include "Adafruit_MLX90393.h"
 
 #include <NTPClient.h>
 #include <WiFiUdp.h>
-
-#define BATT_LOG_PERIOD 5000  // ms between battery logs
 
 const char* default_ssid = "EagleNet";
 const char* default_password = "";
@@ -58,15 +58,28 @@ RTC_PCF8523 rtc;
 unsigned long afterReadRecordTime = 8000;  // number of milliseconds after last tag read to record load cell data
 const uint32_t bufLen = 100;
 
+#define BMP_SCK 13
+#define BMP_MISO 12
+#define BMP_MOSI 11
+#define BMP_CS 10
+
+#define MLX90393_CS 10
+
 Adafruit_INA219 solar1(0x40);
 Adafruit_INA219 solar2(0x44);
 Adafruit_INA219 onlyPwr(0x42);
 Adafruit_INA219 dataPwr(0x45);
+#define BATT_LOG_PERIOD 5000  // ms between battery logs
+
 PCA9536 buzzLED;
 #define RED 0
 #define GRN 1
 #define BLU 2
 #define BUZZ 3
+
+Adafruit_BMP3XX bmp;
+
+Adafruit_MLX90393 sensor = Adafruit_MLX90393();
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
@@ -995,6 +1008,89 @@ void housekeepWrite(String sentenceID, String data) {
     }
   }
 }
+void BMP390Setup() {
+  Serial.println("Starting BMP390...");
+  if (!bmp.begin_I2C()) {   // hardware I2C mode, can pass in address & alt Wire
+  //if (! bmp.begin_SPI(BMP_CS)) {  // hardware SPI mode  
+  //if (! bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {  // software SPI mode
+    Serial.println("Could not find a valid BMP3 sensor, check wiring!");
+    housekeepWrite("%ERROR","Could not find a valid BMP3 sensor");
+  }
+  housekeepWrite("$BMP390", "BMP390 Setup Successful");
+}
+
+void MLX90393Setup() {
+  Serial.println("Starting MLX90393...");
+  if (! sensor.begin_I2C()) {          // hardware I2C mode, can pass in address & alt Wire
+  //if (! sensor.begin_SPI(MLX90393_CS)) {  // hardware SPI mode
+    Serial.println("No sensor found ... check your wiring?");
+    housekeepWrite("%ERROR","Could not find a valid MLX90393 sensor");
+  }
+
+  sensor.setGain(MLX90393_GAIN_1X);
+  // You can check the gain too
+  Serial.print("Gain set to: ");
+  switch (sensor.getGain()) {
+    case MLX90393_GAIN_1X: Serial.println("1 x"); break;
+    case MLX90393_GAIN_1_33X: Serial.println("1.33 x"); break;
+    case MLX90393_GAIN_1_67X: Serial.println("1.67 x"); break;
+    case MLX90393_GAIN_2X: Serial.println("2 x"); break;
+    case MLX90393_GAIN_2_5X: Serial.println("2.5 x"); break;
+    case MLX90393_GAIN_3X: Serial.println("3 x"); break;
+    case MLX90393_GAIN_4X: Serial.println("4 x"); break;
+    case MLX90393_GAIN_5X: Serial.println("5 x"); break;
+  }
+
+  // Set resolution, per axis. Aim for sensitivity of ~0.3 for all axes.
+  sensor.setResolution(MLX90393_X, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Y, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Z, MLX90393_RES_16);
+
+  // Set oversampling
+  sensor.setOversampling(MLX90393_OSR_3);
+
+  // Set digital filtering
+  sensor.setFilter(MLX90393_FILTER_5);
+  housekeepWrite("$MLX90393", "MLX90393 Setup Successful");
+}
+
+void tempPressure() {
+  if (! bmp.performReading()) {
+    Serial.println("Failed to perform temperature and pressure reading");
+    housekeepWrite("$ERROR","Failed to perform temperature and pressure reading, something is wrong with the BMP390");
+  }
+  Serial.print("Temperature = ");
+  Serial.print(bmp.temperature);
+  Serial.println(" *C");
+
+  Serial.print("Pressure = ");
+  Serial.print(bmp.pressure);
+  Serial.println(" Pa");
+}
+
+void magnetometer() {
+  float x, y, z;
+
+  // get X Y and Z data at once
+  if (sensor.readData(&x, &y, &z)) {
+      Serial.print("X: "); Serial.print(x, 4); Serial.println(" uT");
+      Serial.print("Y: "); Serial.print(y, 4); Serial.println(" uT");
+      Serial.print("Z: "); Serial.print(z, 4); Serial.println(" uT");
+  } else {
+      Serial.println("Unable to read XYZ data from the sensor.");
+      housekeepWrite("$ERROR","Unable to read XYZ data from the sensor., something is wrong with the MLX90393");
+  }
+}
+
+void housekeepWriteInterval(String sentenceID, String data, int interval) {
+  // interval is in milliseconds
+  static unsigned long lastWrite = 0;
+  unsigned long curMillis = millis();
+  if ((curMillis - lastWrite) >= interval) {
+  housekeepWrite(sentenceID, data);
+    lastWrite = curMillis;
+  }
+}
 
 void setup(void) {
   pinMode(led, OUTPUT);
@@ -1022,6 +1118,8 @@ void setup(void) {
   loadCellInit();
   tempHumidityInit();
   INA219Setup();
+  BMP390Setup();
+  MLX90393Setup();
   
   SdFile::dateTimeCallback(dateTime);  
   Serial.print("Initializing SD card...");
@@ -1128,5 +1226,9 @@ void loop(void) {
   readBatteryInfo();
 
   loadRFIDWrite();
+
+  tempPressure();
+
+  magnetometer();
 
 }
