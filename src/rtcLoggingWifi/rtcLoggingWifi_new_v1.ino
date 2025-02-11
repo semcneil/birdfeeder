@@ -1054,40 +1054,41 @@ void MLX90393Setup() {
   housekeepWrite("$MLX90393", "MLX90393 Setup Successful");
 }
 
-void tempPressure() {
-  if (! bmp.performReading()) {
-    Serial.println("Failed to perform temperature and pressure reading");
-    housekeepWrite("$ERROR","Failed to perform temperature and pressure reading, something is wrong with the BMP390");
-  }
-  Serial.print("Temperature = ");
-  Serial.print(bmp.temperature);
-  Serial.println(" *C");
-
-  Serial.print("Pressure = ");
-  Serial.print(bmp.pressure);
-  Serial.println(" Pa");
-}
-
-void magnetometer() {
-  float x, y, z;
-
-  // get X Y and Z data at once
-  if (sensor.readData(&x, &y, &z)) {
-      Serial.print("X: "); Serial.print(x, 4); Serial.println(" uT");
-      Serial.print("Y: "); Serial.print(y, 4); Serial.println(" uT");
-      Serial.print("Z: "); Serial.print(z, 4); Serial.println(" uT");
-  } else {
-      Serial.println("Unable to read XYZ data from the sensor.");
-      housekeepWrite("$ERROR","Unable to read XYZ data from the sensor., something is wrong with the MLX90393");
-  }
-}
-
-void housekeepWriteInterval(String sentenceID, String data, int interval) {
-  // interval is in milliseconds
+void tempPressure(int interval) {
   static unsigned long lastWrite = 0;
   unsigned long curMillis = millis();
   if ((curMillis - lastWrite) >= interval) {
-  housekeepWrite(sentenceID, data);
+    if (! bmp.performReading()) {
+      Serial.println("Failed to perform temperature and pressure reading");
+      housekeepWrite("$ERROR","Failed to perform temperature and pressure reading, something is wrong with the BMP390");
+    }
+    Serial.print("Temperature = ");
+    Serial.print(bmp.temperature);
+    Serial.println(" *C");
+  
+    Serial.print("Pressure = ");
+    Serial.print(bmp.pressure);
+    Serial.println(" Pa");
+
+    lastWrite = curMillis;
+  }
+}
+
+void magnetometer(int interval) {
+  static unsigned long lastWrite = 0;
+  unsigned long curMillis = millis();
+  if ((curMillis - lastWrite) >= interval) {
+    float x, y, z;
+  
+    // get X Y and Z data at once
+    if (sensor.readData(&x, &y, &z)) {
+        Serial.print("X: "); Serial.print(x, 4); Serial.println(" uT");
+        Serial.print("Y: "); Serial.print(y, 4); Serial.println(" uT");
+        Serial.print("Z: "); Serial.print(z, 4); Serial.println(" uT");
+    } else {
+        Serial.println("Unable to read XYZ data from the sensor.");
+        housekeepWrite("$ERROR","Unable to read XYZ data from the sensor., something is wrong with the MLX90393");
+    }
     lastWrite = curMillis;
   }
 }
@@ -1220,15 +1221,13 @@ void loop(void) {
   server2->handleClient();
   delay(2);//allow the cpu to switch to other tasks
 
-  checkWifi(wifiMaxCheckTimes/2, 10000); //Just cause :3
-
   // sequenceBuzzLED(3,200,RED);
   readBatteryInfo();
 
   loadRFIDWrite();
 
-  tempPressure();
+  tempPressure(5000);
 
-  magnetometer();
+  magnetometer(5000);
 
 }
