@@ -1,3 +1,5 @@
+#include "arduino_secrets.h"
+
 
 /* rtcLoggingWifi.ino
 
@@ -771,19 +773,15 @@ void INA219Setup() {
   // you can call a setCalibration function to change this range (see comments).
   if (!solar1.begin()) {
     Serial.println("Failed to find solar1 INA219 chip");
-    while (1) { delay(10); }
   }
   if (!solar2.begin()) {
     Serial.println("Failed to find solar2 INA219 chip");
-    while (1) { delay(10); }
   }
   if (!onlyPwr.begin()) {
     Serial.println("Failed to find onlyPwr INA219 chip");
-    while (1) { delay(10); }
   }
   if (!dataPwr.begin()) {
     Serial.println("Failed to find dataPwr INA219 chip");
-    while (1) { delay(10); }
   }
   // To use a slightly lower 32V, 1A range (higher precision on amps):
   //ina219.setCalibration_32V_1A();
@@ -802,8 +800,7 @@ void PCA9536BuzzSetup()
   // Initialize the PCA9536 with a begin functbuzzLEDn
   if (buzzLED.begin() == false)
   {
-    Serial.println("PCA9536 not detected. Please check wiring. Freezing...");
-    while (1)
+    Serial.println("PCA9536 not detected. Please check wiring.");
       ;
   }
 
@@ -899,6 +896,107 @@ void readBatteryInfo() {
   }
 }
 
+void housekeepWrite(String sentenceID, String data) {
+  if(!data.isEmpty()) {
+    myFileHousekeeping = SD.open(fname2, O_WRITE | O_APPEND);
+    if(myFileHousekeeping) {
+      myFileHousekeeping.print(sentenceID);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(data);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(curTimeStr(rtc.now()));
+      myFileHousekeeping.println("");
+      myFileHousekeeping.close();
+    } else {
+      Serial.println("Failed to open housekeeping file");
+    }
+  }
+}
+void BMP390Setup() {
+  Serial.println("Starting BMP390...");
+  if (!bmp.begin_I2C()) {   // hardware I2C mode, can pass in address & alt Wire
+  //if (! bmp.begin_SPI(BMP_CS)) {  // hardware SPI mode  
+  //if (! bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {  // software SPI mode
+    Serial.println("Could not find a valid BMP3 sensor, check wiring!");
+    housekeepWrite("%ERROR","Could not find a valid BMP3 sensor");
+  }
+  housekeepWrite("$BMP390", "BMP390 Setup Successful");
+}
+
+void MLX90393Setup() {
+  Serial.println("Starting MLX90393...");
+  if (! sensor.begin_I2C()) {          // hardware I2C mode, can pass in address & alt Wire
+  //if (! sensor.begin_SPI(MLX90393_CS)) {  // hardware SPI mode
+    Serial.println("No sensor found ... check your wiring?");
+    housekeepWrite("%ERROR","Could not find a valid MLX90393 sensor");
+  }
+
+  sensor.setGain(MLX90393_GAIN_1X);
+  // You can check the gain too
+  Serial.print("Gain set to: ");
+  switch (sensor.getGain()) {
+    case MLX90393_GAIN_1X: Serial.println("1 x"); break;
+    case MLX90393_GAIN_1_33X: Serial.println("1.33 x"); break;
+    case MLX90393_GAIN_1_67X: Serial.println("1.67 x"); break;
+    case MLX90393_GAIN_2X: Serial.println("2 x"); break;
+    case MLX90393_GAIN_2_5X: Serial.println("2.5 x"); break;
+    case MLX90393_GAIN_3X: Serial.println("3 x"); break;
+    case MLX90393_GAIN_4X: Serial.println("4 x"); break;
+    case MLX90393_GAIN_5X: Serial.println("5 x"); break;
+  }
+
+  // Set resolution, per axis. Aim for sensitivity of ~0.3 for all axes.
+  sensor.setResolution(MLX90393_X, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Y, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Z, MLX90393_RES_16);
+
+  // Set oversampling
+  sensor.setOversampling(MLX90393_OSR_3);
+
+  // Set digital filtering
+  sensor.setFilter(MLX90393_FILTER_5);
+  housekeepWrite("$MLX90393", "MLX90393 Setup Successful");
+}
+
+void tempPressure(int interval = 0) {
+  static unsigned long lastWrite = 0;
+  unsigned long curMillis = millis();
+  if ((curMillis - lastWrite) >= interval) {
+    if (! bmp.performReading()) {
+      Serial.println("Failed to perform temperature and pressure reading");
+      housekeepWrite("$ERROR","Failed to perform temperature and pressure reading, something is wrong with the BMP390");
+    }
+    Serial.print("Temperature = ");
+    Serial.print(bmp.temperature);
+    Serial.println(" *C");
+  
+    Serial.print("Pressure = ");
+    Serial.print(bmp.pressure);
+    Serial.println(" Pa");
+
+    lastWrite = curMillis;
+  }
+}
+
+void magnetometer(int interval = 0) {
+  static unsigned long lastWrite = 0;
+  unsigned long curMillis = millis();
+  if ((curMillis - lastWrite) >= interval) {
+    float x, y, z;
+  
+    // get X Y and Z data at once
+    if (sensor.readData(&x, &y, &z)) {
+        Serial.print("X: "); Serial.print(x, 4); Serial.println(" uT");
+        Serial.print("Y: "); Serial.print(y, 4); Serial.println(" uT");
+        Serial.print("Z: "); Serial.print(z, 4); Serial.println(" uT");
+    } else {
+        Serial.println("Unable to read XYZ data from the sensor.");
+        housekeepWrite("$ERROR","Unable to read XYZ data from the sensor., something is wrong with the MLX90393");
+    }
+    lastWrite = curMillis;
+  }
+}
+
 void loadRFIDWrite() {
   static unsigned long lastCharTime = 0; // millis of last character
   static unsigned long tagReadWaitTime = 300;   // ms to wait before newline for RFID tag read finish
@@ -984,112 +1082,12 @@ void loadRFIDWrite() {
       Serial.println("done.");
       lastTagReadTime = curMillis; // record last time a tag was read
       digitalWrite(led, LOW);
+      tempPressure(); // Whenever tag is recorded also write temperature and pressure
   } else {
       // if the file didn't open, print an error:
       Serial.println("error opening " + fname);
     }
     tagNum = ""; // reset tagNum
-  }
-}
-
-void housekeepWrite(String sentenceID, String data) {
-  if(!data.isEmpty()) {
-    myFileHousekeeping = SD.open(fname2, O_WRITE | O_APPEND);
-    if(myFileHousekeeping) {
-      myFileHousekeeping.print(sentenceID);
-      myFileHousekeeping.print(",");
-      myFileHousekeeping.print(data);
-      myFileHousekeeping.print(",");
-      myFileHousekeeping.print(curTimeStr(rtc.now()));
-      myFileHousekeeping.println("");
-      myFileHousekeeping.close();
-    } else {
-      Serial.println("Failed to open housekeeping file");
-    }
-  }
-}
-void BMP390Setup() {
-  Serial.println("Starting BMP390...");
-  if (!bmp.begin_I2C()) {   // hardware I2C mode, can pass in address & alt Wire
-  //if (! bmp.begin_SPI(BMP_CS)) {  // hardware SPI mode  
-  //if (! bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {  // software SPI mode
-    Serial.println("Could not find a valid BMP3 sensor, check wiring!");
-    housekeepWrite("%ERROR","Could not find a valid BMP3 sensor");
-  }
-  housekeepWrite("$BMP390", "BMP390 Setup Successful");
-}
-
-void MLX90393Setup() {
-  Serial.println("Starting MLX90393...");
-  if (! sensor.begin_I2C()) {          // hardware I2C mode, can pass in address & alt Wire
-  //if (! sensor.begin_SPI(MLX90393_CS)) {  // hardware SPI mode
-    Serial.println("No sensor found ... check your wiring?");
-    housekeepWrite("%ERROR","Could not find a valid MLX90393 sensor");
-  }
-
-  sensor.setGain(MLX90393_GAIN_1X);
-  // You can check the gain too
-  Serial.print("Gain set to: ");
-  switch (sensor.getGain()) {
-    case MLX90393_GAIN_1X: Serial.println("1 x"); break;
-    case MLX90393_GAIN_1_33X: Serial.println("1.33 x"); break;
-    case MLX90393_GAIN_1_67X: Serial.println("1.67 x"); break;
-    case MLX90393_GAIN_2X: Serial.println("2 x"); break;
-    case MLX90393_GAIN_2_5X: Serial.println("2.5 x"); break;
-    case MLX90393_GAIN_3X: Serial.println("3 x"); break;
-    case MLX90393_GAIN_4X: Serial.println("4 x"); break;
-    case MLX90393_GAIN_5X: Serial.println("5 x"); break;
-  }
-
-  // Set resolution, per axis. Aim for sensitivity of ~0.3 for all axes.
-  sensor.setResolution(MLX90393_X, MLX90393_RES_17);
-  sensor.setResolution(MLX90393_Y, MLX90393_RES_17);
-  sensor.setResolution(MLX90393_Z, MLX90393_RES_16);
-
-  // Set oversampling
-  sensor.setOversampling(MLX90393_OSR_3);
-
-  // Set digital filtering
-  sensor.setFilter(MLX90393_FILTER_5);
-  housekeepWrite("$MLX90393", "MLX90393 Setup Successful");
-}
-
-void tempPressure(int interval) {
-  static unsigned long lastWrite = 0;
-  unsigned long curMillis = millis();
-  if ((curMillis - lastWrite) >= interval) {
-    if (! bmp.performReading()) {
-      Serial.println("Failed to perform temperature and pressure reading");
-      housekeepWrite("$ERROR","Failed to perform temperature and pressure reading, something is wrong with the BMP390");
-    }
-    Serial.print("Temperature = ");
-    Serial.print(bmp.temperature);
-    Serial.println(" *C");
-  
-    Serial.print("Pressure = ");
-    Serial.print(bmp.pressure);
-    Serial.println(" Pa");
-
-    lastWrite = curMillis;
-  }
-}
-
-void magnetometer(int interval) {
-  static unsigned long lastWrite = 0;
-  unsigned long curMillis = millis();
-  if ((curMillis - lastWrite) >= interval) {
-    float x, y, z;
-  
-    // get X Y and Z data at once
-    if (sensor.readData(&x, &y, &z)) {
-        Serial.print("X: "); Serial.print(x, 4); Serial.println(" uT");
-        Serial.print("Y: "); Serial.print(y, 4); Serial.println(" uT");
-        Serial.print("Z: "); Serial.print(z, 4); Serial.println(" uT");
-    } else {
-        Serial.println("Unable to read XYZ data from the sensor.");
-        housekeepWrite("$ERROR","Unable to read XYZ data from the sensor., something is wrong with the MLX90393");
-    }
-    lastWrite = curMillis;
   }
 }
 
@@ -1226,8 +1224,8 @@ void loop(void) {
 
   loadRFIDWrite();
 
-  tempPressure(5000);
+  tempPressure(60000);
 
-  magnetometer(5000);
+  magnetometer(60000);
 
 }
