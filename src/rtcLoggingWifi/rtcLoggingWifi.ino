@@ -1,50 +1,110 @@
-/* rtcLoggingWifi.ino
+/* rtcLoggingWifiRevisionNine.ino
 
-   This runs a webserver that serves the files from the SD card while logging 
-   load cell measurements for a set amount of time before and after an RFID
-   tag is read
-
-   2024 August 27
+   This version refines all the methods to have similar syntax and error handling
+   It also adds interaction with the settings file on the SDCard. It allows allows for the inital settings of the board
+   This version also fixes the RTC allowing for proper time tracking and adjustment.
+   This version also propely interprets data nad gives correct output. 
+   This version meets all project specifications 
+   April 18th 2025
 */
-
-#include <SPI.h>  // SD card
+#include "esp_system.h"
+#include <SPI.h>    // SD card
 #include <SdFat.h>  // Adafruit fork of SdFat for SD card
-#include <WiFi.h>
+#include <WiFi.h>   
 #include <WiFiClient.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
-
 #include <Adafruit_GFX.h>
 #include <Adafruit_AHTX0.h>    // temp/humidity
 #include <Adafruit_NAU7802.h>  // load cell ADC
-#include "RTClib.h"  // Real-time clock (PCF8523)
-#include "circle_buf.h"  // circular buffer (Boulder Flight version) 
-
-const char* default_ssid = "EagleNet";
-const char* default_password = "";
+#include "RTClib.h"            // Real-time clock (PCF8523)
+#include "circle_buf.h"        // circular buffer (Boulder Flight version)
+#include <PCA9536D.h>
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+#include "Adafruit_BMP3XX.h"
+#include "Adafruit_MLX90393.h"
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include "esp_sleep.h"
+//The following variables can be changed and modified to manipulate data gathering and other stats.
+const int wifiMaxCheckTimes = 10;       //Max Times Wifi is checked. Default Value: 10
+int timeZone = -4;                       //Timezone. Default is UTC-0
+const int loopsBetweenReads = 10;       //If a tag is read and it is the same as the last tag read, wait this many loops before logging it again. Default is 10.
+const int loadCellBufferSize = 3;       //How many values priror to a tag being read are logged. Default: 3
+const int loopsBetweenTimeLogs = 1000;  //How many loops between logging the time and tempature. Default is 10000;
+const char* feederName = "feederOne";   //Name of the feeder, change freely
+const int maxReadingCount = 50;
+//Macey adds here- variables added and manipulated to change the deep sleep timer
+const unsigned long startSleepTime = 36000000; //convert the hour you want the sleep to start to milliseconds, current 10 pm 
+const unsigned long endSleepTime = 18000000; //concert the hour you want to wake in milliseconds, current 5 AM
+//unsigned long lastAwakeTime = 0; 
+RTC_DATA_ATTR unsigned long lastWakeUpTime = 0; //storing the time in RTC memory
+unsigned long timeToFive = 0; //amount of time left sleeping until 5 AM
+unsigned long currentTimeForSleep = 0; //storing the current time , currentMilis
+//end Macey adds
+//The following variables can be modified to manipulate the web server.
+const char* default_ssid = "Wesley's Cooler Hotspot";
+const char* default_password = "frogsarecool";
 const char* default_apssid = "birdfeeder";
 const char* default_appassword = "password1";
 char ssid[32];
 char password[32];
 char apssid[32];
 char appassword[32];
-int wifiMaxCheckTimes = 10;
-int timeZone = 0;  // UTC-0
 
-#define SD_CS             10  // SD card chip select
-#define I2C_PWR_PIN        7   // pin to turn on/off I2C power, set high for on
-SdFat SD;  // required with SdFat.h, not SD.h
-SdFile myFile;  // not sure why SdFile and not just File
+//Variables beyong this point should NOT be modified unless specified elsewhere
+String tagNum = "";
+String lastTagRead = "";
+String readingId = "";
+int loopsSinceLastRead = 0;
+int loopCount = 0;
+int readingCount = 0;
+int loadCellBuffer[loadCellBufferSize];
+
+#define SD_CS 10       // SD card chip select
+#define I2C_PWR_PIN 7  // pin to turn on/off I2C power, set high for on
+SdFat SD;              // required with SdFat.h, not SD.h
+SdFile myFile;         // not sure why SdFile and not just File
 File32 myFileLoadCell;
+File32 myFileHousekeeping;
+File32 myFileTempature;
 String fname = "/settings.txt";  // forward slash critical for ESP32 function
+String fname2;
+String fname3;
 String baseName = "/data";
 String ext = ".csv";
+String settingFname = "/settings.txt";  // forward slash critical for ESP32 function
 int lastFileNum = 0;
-Adafruit_NAU7802 nau;  // load cell 
+Adafruit_NAU7802 nau;  // load cell
 Adafruit_AHTX0 aht;    // Temperature / humidity
 RTC_PCF8523 rtc;
-unsigned long afterReadRecordTime = 8000;  // number of milliseconds after last tag read to record load cell data
-const uint32_t bufLen = 100;
+
+#define BMP_SCK 13
+#define BMP_MISO 12
+#define BMP_MOSI 11
+#define BMP_CS 10
+
+#define MLX90393_CS 10
+
+Adafruit_INA219 solar1(0x40);
+Adafruit_INA219 solar2(0x44);
+Adafruit_INA219 onlyPwr(0x42);
+Adafruit_INA219 dataPwr(0x45);
+#define BATT_LOG_PERIOD 5000  // ms between battery logs
+
+PCA9536 buzzLED;
+#define RED 0
+#define GRN 1
+#define BLU 2
+#define BUZZ 3
+
+Adafruit_BMP3XX bmp;
+
+Adafruit_MLX90393 sensor = Adafruit_MLX90393();
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
 
 struct loadPoint {
   DateTime t;
@@ -60,38 +120,56 @@ const int led = LED_BUILTIN;
 const int led = 13;
 #endif
 
-void handleRoot(WebServer *server, const String &content) {
+
+/* This method adds padding zeros to ensure data is the same size 
+*/
+String zeroPad(int ii) {
+  String outStr = "";
+  if (ii < 10) {
+    outStr += "0";
+  }
+  outStr += String(ii);
+  return (outStr);
+}
+
+
+/* This method handles the web servers and gives visual feedbakc for this
+*/
+void handleRoot(WebServer* server,
+                const String& content) {
   digitalWrite(led, 1);
   server->send(200, "text/html", content);
   digitalWrite(led, 0);
 }
 
+/*Method for handling downloads
+*/
 void handleDownload0() {
   // check that an argument of type filename has been submitted
-  if(server0->args() < 1) {
+  if (server0->args() < 1) {
     server0->send(200, "text/plain", "Need argument of type ?filename=somename.csv");
     return;
   }
   // get the size of the file
   // create the response with the file contents
-  String fname = "junk.txt";
-  for(int ii = 0;ii < server0->args();ii++) {
+  String fnameNew = "junk.txt";
+  for (int ii = 0; ii < server0->args(); ii++) {
     Serial.println("Arg " + String(ii) + " -> ");
     Serial.println(server0->argName(ii) + ": ");
     Serial.println(server0->arg(ii) + "\n");
-    if(server0->argName(ii) == "filename") {
-      fname = "/";  // very important for ESP32 based filenames
-      fname += server0->arg(ii);
+    if (server0->argName(ii) == "filename") {
+      fnameNew = "/";  // very important for ESP32 based filenames
+      fnameNew += server0->arg(ii);
       break;
     }
   }
-  Serial.println("Downloading file: " + fname);
-  File32 fptr; // = SD.open(fname.c_str());
+  Serial.println("Downloading file: " + fnameNew);
+  File32 fptr;  // = SD.open(fname.c_str());
 
-  if(!fptr.open(fname.c_str(), O_RDONLY)) {
+  if (!fptr.open(fname.c_str(), O_RDONLY)) {
     // file doesn't exist
-    Serial.println("File " + fname + " doesn't exist");
-    server0->send(200, "text/plain", "File " + fname + " doesn't exist");
+    Serial.println("File " + fnameNew + " doesn't exist");
+    server0->send(200, "text/plain", "File " + fnameNew + " doesn't exist");
     return;
   }
   Serial.println("Filesize " + String(fptr.fileSize()));
@@ -110,7 +188,7 @@ void handleFileExample0() {
   message += "# args: ";
   message += server0->args();
   message += "\n";
-  for(int ii = 0;ii < server0->args();ii++) {
+  for (int ii = 0; ii < server0->args(); ii++) {
     message += "Arg " + String(ii) + " -> ";
     message += server0->argName(ii) + ": ";
     message += server0->arg(ii) + "\n";
@@ -137,63 +215,63 @@ void handleRoot0() {
   outStr += "<br>\n<strong>WiFi Access Point Password: </strong>";
   outStr += password;
   outStr += "<br><br>\n\n";
-  
+
   File32 rootDir = SD.open("/");
-  while(true) {
+  while (true) {
     File32 entry = rootDir.openNextFile();
-    if(!entry) {
+    if (!entry) {
       outStr += "No more files<br><br>\n";
       outStr += "<strong>Edit Real-Time-Clock</strong><br><br>"
-        "<form action=\"/rtcForm\" method=\"get\">"
-          "<label for=\"rtcValue\">MM/DD/YYYY HH:MM:SS:</label>"
-          "<input type=\"text\" id=\"rtcValue\" name=\"rtcValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-        "<form action=\"/timeZoneForm\" method=\"get\">"
-          "<label for=\"timeZoneValue\">Timezone UTC-(#):</label>"
-          "<input type=\"text\" id=\"timeZoneValue\" name=\"timeZoneValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-        "<strong>Edit settings.txt</strong> (Restart ESP32-S3 to apply changes)"  // Too lazy to implement a better fix
-        "<br><br>"
-        "<form action=\"/wifiSSIDForm\" method=\"get\">"
-          "<label for=\"wifiSSIDValue\">WiFi Access Point SSID:</label>"
-          "<input type=\"text\" id=\"wifiSSIDValue\" name=\"wifiSSIDValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-        "<form action=\"/wifiPasswordForm\" method=\"get\">"
-          "<label for=\"wifiPasswordValue\">WiFi Access Point Password:</label>"
-          "<input type=\"text\" id=\"wifiPasswordValue\" name=\"wifiPasswordValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-        "<form action=\"/apSSIDForm\" method=\"get\">"
-          "<label for=\"apSSIDValue\">Local Access Point SSID:</label>"
-          "<input type=\"text\" id=\"apSSIDValue\" name=\"apSSIDValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-        "<form action=\"/apPasswordForm\" method=\"get\">"
-          "<label for=\"apPasswordValue\">Local Access Point Password:</label>"
-          "<input type=\"text\" id=\"apPasswordValue\" name=\"apPasswordValue\">"
-          "<input type=\"submit\" value=\"Submit\">"
-        "</form>"
-        "<br>"
-            "<form action=\"/restart\" method=\"post\">"  // Teehee (Late Night Delerium Hittin HARD)
-              "<input type=\"submit\" value=\"Restart ESP32\">"
-            "</form>";
+                "<form action=\"/rtcForm\" method=\"get\">"
+                "<label for=\"rtcValue\">MM/DD/YYYY HH:MM:SS:</label>"
+                "<input type=\"text\" id=\"rtcValue\" name=\"rtcValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<form action=\"/timeZoneForm\" method=\"get\">"
+                "<label for=\"timeZoneValue\">Timezone UTC(#):</label>"
+                "<input type=\"text\" id=\"timeZoneValue\" name=\"timeZoneValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<strong>Edit settings.txt</strong> (Restart ESP32-S3 to apply changes)"  // Too lazy to implement a better fix
+                "<br><br>"
+                "<form action=\"/wifiSSIDForm\" method=\"get\">"
+                "<label for=\"wifiSSIDValue\">WiFi Access Point SSID:</label>"
+                "<input type=\"text\" id=\"wifiSSIDValue\" name=\"wifiSSIDValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<form action=\"/wifiPasswordForm\" method=\"get\">"
+                "<label for=\"wifiPasswordValue\">WiFi Access Point Password:</label>"
+                "<input type=\"text\" id=\"wifiPasswordValue\" name=\"wifiPasswordValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<form action=\"/apSSIDForm\" method=\"get\">"
+                "<label for=\"apSSIDValue\">Local Access Point SSID:</label>"
+                "<input type=\"text\" id=\"apSSIDValue\" name=\"apSSIDValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<form action=\"/apPasswordForm\" method=\"get\">"
+                "<label for=\"apPasswordValue\">Local Access Point Password:</label>"
+                "<input type=\"text\" id=\"apPasswordValue\" name=\"apPasswordValue\">"
+                "<input type=\"submit\" value=\"Submit\">"
+                "</form>"
+                "<br>"
+                "<form action=\"/restart\" method=\"post\">"  // Teehee (Late Night Delerium Hittin HARD)
+                "<input type=\"submit\" value=\"Restart ESP32\">"
+                "</form>";
       outStr += "</body></html>";
       break;
     }
     char nameField[16];  //  Allows files with names less than 16 characters. Perhaps should be upped to 32?
-    int nameLen = entry.getName(nameField, 16);  
-    if(nameLen > 0 && nameField[0] != '.') {
+    int nameLen = entry.getName(nameField, 16);
+    if (nameLen > 0 && nameField[0] != '.') {
       uint16_t mDate = 0;
       uint16_t mTime = 0;
-      
+
       //entry.getModifyDateTime(&mDate, &mTime);
       //entry.printFatDate(&Serial,&mDate);
       //entry.printModifyDateTime(&Serial);
@@ -202,7 +280,7 @@ void handleRoot0() {
       outStr += "\">";
       outStr += nameField;
       outStr += "</a> ";
-      outStr += (float)entry.fileSize()/1024.0/1024.0;
+      outStr += (float)entry.fileSize() / 1024.0 / 1024.0;
       outStr += " MB";
       if (String(nameField) == fname.substring(1)) {
         // outStr += "<strong> << Last Update: </strong> ";
@@ -268,7 +346,7 @@ void handleRoot2() {
   handleRoot(server2, "Hello from server2 who listens only on own Soft AP");
 }
 
-void handleNotFound(WebServer *server) {
+void handleNotFound(WebServer* server) {
   digitalWrite(led, 1);
   String message = "File Not Found\n\n";
   message += "URI: ";
@@ -306,63 +384,63 @@ void loadSettings(String settingFname) {
   strcpy(apssid, default_apssid);
   strcpy(appassword, default_appassword);
 
-  if(!fptr.open(settingFname.c_str(), O_RDONLY)) {
+  if (!fptr.open(settingFname.c_str(), O_RDONLY)) {
     // file doesn't exist
     Serial.println("Please create a " + settingFname + " file. Using defaults.");
     return;
   }
-  const uint8_t size = 80; // max line length
+  const uint8_t size = 80;  // max line length
   char str[size];
 
   int rtn = parseSetting(&fptr, str, size, ':');
-  while(rtn > 0) {
-    if(rtn == '#') {
+  while (rtn > 0) {
+    if (rtn == '#') {
       Serial.println("Comment parsed");
     } else {
       // Serial.print("rtn = "); Serial.println(rtn);
       // Serial.print("str = "); Serial.println(str);
       // accesspoint ssid name
       // 58 is :, 10 is \n
-      if((rtn == 58) && (strcmp(str, "apssid") == 0)) {
+      if ((rtn == 58) && (strcmp(str, "apssid") == 0)) {
         Serial.print("Access point ssid is ");
         rtn = parseSetting(&fptr, str, size, ':');
-        if(rtn == 10) {
+        if (rtn == 10) {
           Serial.println(str);
         }
         // copy to the variable
         strcpy(apssid, str);
       }
-      if((rtn == 58) && (strcmp(str, "appass") == 0)) {
+      if ((rtn == 58) && (strcmp(str, "appass") == 0)) {
         Serial.print("Access point password is ");
         rtn = parseSetting(&fptr, str, size, ':');
-        if(rtn == 10) {
+        if (rtn == 10) {
           Serial.println(str);
         }
         // copy to the variable
         strcpy(appassword, str);
       }
-      if((rtn == 58) && (strcmp(str, "wifissid") == 0)) {
+      if ((rtn == 58) && (strcmp(str, "wifissid") == 0)) {
         Serial.print("WiFi SSID is ");
         rtn = parseSetting(&fptr, str, size, ':');
-        if(rtn == 10) {
+        if (rtn == 10) {
           Serial.println(str);
         }
         // copy to the variable
         strcpy(ssid, str);
       }
-      if((rtn == 58) && (strcmp(str, "wifipass") == 0)) {
+      if ((rtn == 58) && (strcmp(str, "wifipass") == 0)) {
         Serial.print("WiFi password is ");
         rtn = parseSetting(&fptr, str, size, ':');
-        if(rtn == 10) {
+        if (rtn == 10) {
           Serial.println(str);
         }
         // copy to the variable
         strcpy(password, str);
       }
-      if((rtn == 58) && (strcmp(str, "timezone") == 0)) {
+      if ((rtn == 58) && (strcmp(str, "timezone") == 0)) {
         Serial.print("Access point time zone is ");
         rtn = parseSetting(&fptr, str, size, ':');
-        if(rtn == 10) {
+        if (rtn == 10) {
           Serial.println(str);
         }
         // copy to the variable
@@ -401,25 +479,25 @@ int parseSetting(File32* fptr, char* str, int size, char delim) {
       continue;
     }
     // end of comment line
-    if(comment == true && ch == '\n') {
+    if (comment == true && ch == '\n') {
       rtn = '#';
       break;
     }
     // keep ignoring to the end of the line for comments
-    if(comment == true) {
-      continue; 
+    if (comment == true) {
+      continue;
     }
     // ignore leading spaces
-    if(n == 0 && (ch == ' ' || ch == '\t')) {
+    if (n == 0 && (ch == ' ' || ch == '\t')) {
       leadingWhitespace = true;
       continue;
     }
     // clip continued white space
-    if(leadingWhitespace && (ch == ' ' || ch == '\t')) {
+    if (leadingWhitespace && (ch == ' ' || ch == '\t')) {
       continue;
     }
     // turn off clipping white space
-    if(ch != ' ' && ch != '\t') {
+    if (ch != ' ' && ch != '\t') {
       leadingWhitespace = false;
     }
     // end of parsed word
@@ -436,109 +514,152 @@ int parseSetting(File32* fptr, char* str, int size, char delim) {
     str[n++] = ch;
   }
   str[n] = '\0';
-  return(rtn);
+  return (rtn);
 }
 
 bool loadCellInit() {
   if (!nau.begin()) {
     Serial.println("Failed to find NAU7802");
-    return(false);
+    return (false);
   }
   Serial.println("Found NAU7802");
 
   nau.setLDO(NAU7802_3V0);
   Serial.print("LDO voltage set to ");
   switch (nau.getLDO()) {
-    case NAU7802_4V5:  Serial.println("4.5V"); break;
-    case NAU7802_4V2:  Serial.println("4.2V"); break;
-    case NAU7802_3V9:  Serial.println("3.9V"); break;
-    case NAU7802_3V6:  Serial.println("3.6V"); break;
-    case NAU7802_3V3:  Serial.println("3.3V"); break;
-    case NAU7802_3V0:  Serial.println("3.0V"); break;
-    case NAU7802_2V7:  Serial.println("2.7V"); break;
-    case NAU7802_2V4:  Serial.println("2.4V"); break;
-    case NAU7802_EXTERNAL:  Serial.println("External"); break;
+    case NAU7802_4V5:
+      Serial.println("4.5V");
+      break;
+    case NAU7802_4V2:
+      Serial.println("4.2V");
+      break;
+    case NAU7802_3V9:
+      Serial.println("3.9V");
+      break;
+    case NAU7802_3V6:
+      Serial.println("3.6V");
+      break;
+    case NAU7802_3V3:
+      Serial.println("3.3V");
+      break;
+    case NAU7802_3V0:
+      Serial.println("3.0V");
+      break;
+    case NAU7802_2V7:
+      Serial.println("2.7V");
+      break;
+    case NAU7802_2V4:
+      Serial.println("2.4V");
+      break;
+    case NAU7802_EXTERNAL:
+      Serial.println("External");
+      break;
   }
 
   nau.setGain(NAU7802_GAIN_128);
   Serial.print("Gain set to ");
   switch (nau.getGain()) {
-    case NAU7802_GAIN_1:  Serial.println("1x"); break;
-    case NAU7802_GAIN_2:  Serial.println("2x"); break;
-    case NAU7802_GAIN_4:  Serial.println("4x"); break;
-    case NAU7802_GAIN_8:  Serial.println("8x"); break;
-    case NAU7802_GAIN_16:  Serial.println("16x"); break;
-    case NAU7802_GAIN_32:  Serial.println("32x"); break;
-    case NAU7802_GAIN_64:  Serial.println("64x"); break;
-    case NAU7802_GAIN_128:  Serial.println("128x"); break;
+    case NAU7802_GAIN_1:
+      Serial.println("1x");
+      break;
+    case NAU7802_GAIN_2:
+      Serial.println("2x");
+      break;
+    case NAU7802_GAIN_4:
+      Serial.println("4x");
+      break;
+    case NAU7802_GAIN_8:
+      Serial.println("8x");
+      break;
+    case NAU7802_GAIN_16:
+      Serial.println("16x");
+      break;
+    case NAU7802_GAIN_32:
+      Serial.println("32x");
+      break;
+    case NAU7802_GAIN_64:
+      Serial.println("64x");
+      break;
+    case NAU7802_GAIN_128:
+      Serial.println("128x");
+      break;
   }
 
   nau.setRate(NAU7802_RATE_10SPS);
   Serial.print("Conversion rate set to ");
   switch (nau.getRate()) {
-    case NAU7802_RATE_10SPS:  Serial.println("10 SPS"); break;
-    case NAU7802_RATE_20SPS:  Serial.println("20 SPS"); break;
-    case NAU7802_RATE_40SPS:  Serial.println("40 SPS"); break;
-    case NAU7802_RATE_80SPS:  Serial.println("80 SPS"); break;
-    case NAU7802_RATE_320SPS:  Serial.println("320 SPS"); break;
+    case NAU7802_RATE_10SPS:
+      Serial.println("10 SPS");
+      break;
+    case NAU7802_RATE_20SPS:
+      Serial.println("20 SPS");
+      break;
+    case NAU7802_RATE_40SPS:
+      Serial.println("40 SPS");
+      break;
+    case NAU7802_RATE_80SPS:
+      Serial.println("80 SPS");
+      break;
+    case NAU7802_RATE_320SPS:
+      Serial.println("320 SPS");
+      break;
   }
 
   // Take 10 readings to flush out readings
-  for (uint8_t i=0; i<10; i++) {
-    while (! nau.available()) delay(1);
+  for (uint8_t i = 0; i < 10; i++) {
+    while (!nau.available()) delay(1);
     nau.read();
   }
 
-  while (! nau.calibrate(NAU7802_CALMOD_INTERNAL)) {
+  while (!nau.calibrate(NAU7802_CALMOD_INTERNAL)) {
     Serial.println("Failed to calibrate internal offset, retrying!");
     delay(1000);
   }
   Serial.println("Calibrated internal offset");
 
-  while (! nau.calibrate(NAU7802_CALMOD_OFFSET)) {
+  while (!nau.calibrate(NAU7802_CALMOD_OFFSET)) {
     Serial.println("Failed to calibrate system offset, retrying!");
     delay(1000);
   }
   Serial.println("Calibrated system offset");
-  return(true);
+  return (true);
 }
-
 
 bool tempHumidityInit() {
   if (aht.begin()) {
-      Serial.println("Found AHT20");
-      return(true);
+    Serial.println("Found AHT20");
+    return (true);
   } else {
-      Serial.println("Didn't find AHT20");
-      return(false);
-  }  
+    Serial.println("Didn't find AHT20");
+    return (false);
+  }
 }
 
-String findFname() {
-  String fname = baseName + String(lastFileNum) + ext;
-  while(SD.exists(fname)) {
-    fname = baseName + String(++lastFileNum) + ext;
+String findFname(String name) {
+  String fname = name + String(lastFileNum) + ext;
+  while (SD.exists(fname)) {
+    fname = name + String(++lastFileNum) + ext;
   }
-  return(fname);
+  return (fname);
 }
 
 String curTimeStr(DateTime now) {
   //DateTime now = rtc.now();
 
   String outStr = "";
-  outStr += now.month();
+  outStr += zeroPad(now.month());
   outStr += '/';
-  outStr += now.day();
+  outStr += zeroPad(now.day());
   outStr += '/';
   outStr += now.year();
   outStr += " ";
-  outStr += now.hour();
+  outStr += zeroPad(now.hour());
   outStr += ':';
-  outStr += now.minute();
+  outStr += zeroPad(now.minute());
   outStr += ':';
-  outStr += now.second();
-  
-  return(outStr);
+  outStr += zeroPad(now.second());
+
+  return (outStr);
 }
 
 void printCurTime() {
@@ -561,22 +682,22 @@ void printCurTime() {
 
 // callback for SD card write times
 void dateTime(uint16_t* date, uint16_t* time) {
-  DateTime now = rtc.now();  
+  DateTime now = rtc.now();
 
   *date = FAT_DATE(now.year(), now.month(), now.day());
   *time = FAT_TIME(now.hour(), now.minute(), now.second());
 }
 
-void handleForm(WebServer *server, String inputName) {
+void handleForm(WebServer* server, String inputName) {
   String input;
   if (server->hasArg(inputName)) {
     input = server->arg(inputName);
     Serial.println("Received input: " + input);
   }
   // I want to streamline this a bit more. Make it more generic later on
-  if (inputName =="rtcValue") {
+  if (inputName == "rtcValue") {
+    Serial.println("Received The Time" + input);
     rtc.adjust(strToDateTime(input));
-    printCurTime();
   } else if (inputName == "wifiSSIDValue") {
     input.toCharArray(ssid, sizeof(ssid));
   } else if (inputName == "wifiPasswordValue") {
@@ -597,40 +718,47 @@ void handleForm(WebServer *server, String inputName) {
 
 void checkWifi(int retryConnect = 1, int retryInterval = 0) {
   // Checks for WiFi availability and connects to it.
+  String outStr = "";
   static unsigned long previousMillis = 0;
   unsigned long currentMillis = millis();
-  if (((currentMillis - previousMillis) >= retryInterval) && (WiFi.status() !=WL_CONNECTED)) {
+  if (((currentMillis - previousMillis) >= retryInterval) && (WiFi.status() != WL_CONNECTED)) {
     previousMillis = currentMillis;
-    
+
     WiFi.begin(ssid, password);
     Serial.print("Attempting to Connect to WiFi access point");
-    
+
     int nWifiCheck = 0;
-    
+
     while ((WiFi.status() != WL_CONNECTED) && (nWifiCheck++ < retryConnect)) {
       delay(500);
       Serial.print(".");
     }
-  
-    if(WiFi.status() == WL_CONNECTED) {
-      Serial.println("");
-      Serial.print("Connected to \"");
-      Serial.print(ssid);
-      Serial.print("\", IP address: ");
-      Serial.println(WiFi.localIP());
+
+    if (WiFi.status() == WL_CONNECTED) {
+      // outStr += "\n";
+      IPAddress curIP = WiFi.localIP();
+      outStr += "Connected to \"";
+      outStr += ssid;
+      outStr += "\", IP address: ";
+      outStr += curIP.toString();
+      // outStr += "\n";
+      Serial.println(outStr);
+      housekeepWrite("$Network", outStr);
       syncRTCTime();
     } else {
       WiFi.disconnect();
-      Serial.print("Failed to connect to WiFi access point ");
-      Serial.println(ssid);
+      outStr += "Failed to connect to WiFi access point ";
+      outStr += ssid;
+      Serial.print(outStr);
+      housekeepWrite("$Error", outStr);
     }
   }
 }
 
 DateTime strToDateTime(String str) {
-  if (str.length() != 19) {
-    Serial.println("Error: Invalid DateTime String");
-    return DateTime(2000, 1, 1, 0, 0, 0);
+  if (!(str.length() >= 19)) {
+    Serial.println("I received" + str);
+    return rtc.now();
   }
 
   // Extract individual components from the string
@@ -646,7 +774,7 @@ DateTime strToDateTime(String str) {
 }
 
 void updateSettings() {
-  File32 settingsFile = SD.open("settings.txt", O_WRITE);
+  File32 settingsFile = SD.open(fname, O_WRITE | O_CREAT);
   if (settingsFile) {
     settingsFile.print("# This is a comment that starts with a # sign as first character\napssid: ");
     settingsFile.println(apssid);
@@ -665,85 +793,524 @@ void updateSettings() {
 }
 
 void syncRTCTime() {
+  String outStr = "Old RTC Time: ";
   if (WiFi.status() == WL_CONNECTED) {
     // Configure NTP
-    configTime(timeZone * 3600, 0, "pool.ntp.org", "time.nist.gov");  //Add Variables to configure time zones and daylight savings offset
+    timeClient.begin();
+    Serial.println("NTP Time set attempt");
+    delay(3000);
+    int nTries = 10;   // number of times to try updating RTC
+    int tryCount = 0;  // counter for tries to update RTC
 
     // Wait for time to be set
-    struct tm time0;
-    if (getLocalTime(&time0)) {
-      DateTime time1(time0.tm_year + 1900, time0.tm_mon + 1, time0.tm_mday, time0.tm_hour, time0.tm_min, time0.tm_sec);
+    while (!timeClient.isTimeSet() && tryCount < nTries) {
+      Serial.print("NTP Try ");
+      Serial.println(tryCount);
+      tryCount++;
+      timeClient.update();
+      unsigned long epochTime = timeClient.getEpochTime();
+      DateTime time1(epochTime + timeZone * 3600);
+
+      outStr += curTimeStr(rtc.now());
+      outStr += ", New RTC Time: ";
+      outStr += zeroPad(time1.month()) + "/" + zeroPad(time1.day()) + "/" + String(time1.year()) + " " + zeroPad(time1.hour()) + ":" + zeroPad(time1.minute()) + ":" + zeroPad(time1.second()) + "(UTC)";
+      housekeepWrite("$Time", outStr);
+
       rtc.adjust(time1);
       Serial.print("Sync RTC time success: ");
-      Serial.println(String(time1.month()) + "/" + String(time1.day()) + "/" + String(time1.year()) + " " + String(time1.hour()) + ":" + String(time1.minute()) + ":" + String(time1.second()) + " (UTC)");
-    } else {
+      Serial.println(zeroPad(time1.month()) + "/" + zeroPad(time1.day()) + "/" + String(time1.year()) + " " + zeroPad(time1.hour()) + ":" + zeroPad(time1.minute()) + ":" + zeroPad(time1.second()) + " (UTC)");
+      delay(500);
+    }
+    if (tryCount >= 9) {
       Serial.println("Error: Sync RTC time failed. Unable to obtain time from NTP server.");
+      housekeepWrite("$Error", "Error: Sync RTC time failed. Unable to obtain time from NTP server.");
     }
   } else {
     Serial.println("Error: Sync RTC time failed. Not Connected to WiFi.");
+    housekeepWrite("$Error", "Error: Sync RTC time failed. Not Connected to WiFi.");
   }
 }
 
 void handleRTCTime() {
   String serverTime = curTimeStr(rtc.now());
   serverTime += ".";
-  serverTime += String(millis()%1000);
+  serverTime += String(millis() % 1000);
   server0->send(200, "text/plain", serverTime);
 }
 
+void INA219Setup() {
+  Serial.println("Starting INA219...");
+
+  // Initialize the INA219.
+  // By default the initialization will use the largest range (32V, 2A).  However
+  // you can call a setCalibration function to change this range (see comments).
+  if (!solar1.begin()) {
+    Serial.println("Failed to find solar1 INA219 chip");
+  }
+  if (!solar2.begin()) {
+    Serial.println("Failed to find solar2 INA219 chip");
+  }
+  if (!onlyPwr.begin()) {
+    Serial.println("Failed to find onlyPwr INA219 chip");
+  }
+  if (!dataPwr.begin()) {
+    Serial.println("Failed to find dataPwr INA219 chip");
+  }
+  // To use a slightly lower 32V, 1A range (higher precision on amps):
+  //ina219.setCalibration_32V_1A();
+  // Or to use a lower 16V, 400mA range (higher precision on volts and amps):
+  //ina219.setCalibration_16V_400mA();
+
+  Serial.println("Measuring voltage and current with INA219 ...");
+}
+
+void PCA9536BuzzSetup() {
+  Serial.println("PCA9536 starting...");
+
+  Wire.begin();
+
+  // Initialize the PCA9536 with a begin functbuzzLEDn
+  if (buzzLED.begin() == false) {
+    Serial.println("PCA9536 not detected. Please check wiring.");
+    ;
+  }
+
+  // set all I/O as outputs
+  for (int i = 0; i < 4; i++) {
+    // pinMode can be used to set an I/O as OUTPUT or INPUT
+    buzzLED.pinMode(i, OUTPUT);
+  }
+  sequenceBuzzLED(1, 100, GRN);
+}
+
+void sequenceBuzzLED(int iterations, int blinkDuration, int color) {
+  for (int i = 0; i < iterations; i++) {
+    buzzLED.write(color, LOW);
+    buzzLED.write(BUZZ, HIGH);
+    delay(blinkDuration);
+    buzzLED.write(color, HIGH);
+    buzzLED.write(BUZZ, LOW);
+    delay(blinkDuration);
+  }
+}
+
+void readBatteryInfo() {
+  static unsigned long lastTime = millis();
+  unsigned long curTime = millis();
+  if (curTime - lastTime > BATT_LOG_PERIOD) {
+    lastTime = curTime;
+    float shuntvoltage1 = 0;
+    float busvoltage1 = 0;
+    float current_mA1 = 0;
+    float loadvoltage1 = 0;
+    float power_mW1 = 0;
+
+    float shuntvoltage2 = 0;
+    float busvoltage2 = 0;
+    float current_mA2 = 0;
+    float loadvoltage2 = 0;
+    float power_mW2 = 0;
+
+    float shuntvoltage3 = 0;
+    float busvoltage3 = 0;
+    float current_mA3 = 0;
+    float loadvoltage3 = 0;
+    float power_mW3 = 0;
+
+    float shuntvoltage4 = 0;
+    float busvoltage4 = 0;
+    float current_mA4 = 0;
+    float loadvoltage4 = 0;
+    float power_mW4 = 0;
+    String outStr = "";
+
+    shuntvoltage1 = solar1.getShuntVoltage_mV();
+    busvoltage1 = solar1.getBusVoltage_V();
+    current_mA1 = solar1.getCurrent_mA();
+    power_mW1 = solar1.getPower_mW();
+    loadvoltage1 = busvoltage1 + (shuntvoltage1 / 1000);
+
+    shuntvoltage2 = solar2.getShuntVoltage_mV();
+    busvoltage2 = solar2.getBusVoltage_V();
+    current_mA2 = solar2.getCurrent_mA();
+    power_mW2 = solar2.getPower_mW();
+    loadvoltage2 = busvoltage2 + (shuntvoltage2 / 1000);
+
+    shuntvoltage3 = onlyPwr.getShuntVoltage_mV();
+    busvoltage3 = onlyPwr.getBusVoltage_V();
+    current_mA3 = onlyPwr.getCurrent_mA();
+    power_mW3 = onlyPwr.getPower_mW();
+    loadvoltage3 = busvoltage3 + (shuntvoltage3 / 1000);
+
+    shuntvoltage4 = dataPwr.getShuntVoltage_mV();
+    busvoltage4 = dataPwr.getBusVoltage_V();
+    current_mA4 = dataPwr.getCurrent_mA();
+    power_mW4 = dataPwr.getPower_mW();
+    loadvoltage4 = busvoltage4 + (shuntvoltage4 / 1000);
+
+    // Serial.print("Bus Voltages:   "); Serial.print(busvoltage1); Serial.print(" V, "); Serial.print(busvoltage2); Serial.println(" V");
+    // Serial.print("Shunt Voltages: "); Serial.print(shuntvoltage1); Serial.print(" mV, "); Serial.print(shuntvoltage2); Serial.println(" mV");
+    // Serial.print("Load Voltages:  "); Serial.print(loadvoltage1); Serial.print(" V, "); Serial.print(loadvoltage2); Serial.println(" V");
+    // Serial.print("Currents:       "); Serial.print(current_mA1); Serial.print(" mA, "); Serial.print(current_mA2); Serial.println(" mA");
+    // Serial.print("Powers:         "); Serial.print(power_mW1); Serial.print(" mW, "); Serial.print(power_mW2); Serial.println(" mW");
+    // Serial.println("");
+    // out = "Bus Voltages:   "; out += busvoltage1;out += " V, ";out += busvoltage2; out +=" V\n";
+    // out += "Shunt Voltages: "; out += shuntvoltage1;out += " mV, ";out += shuntvoltage2; out +=" mV\n";
+    // out += "Load Voltages:  "; out += loadvoltage1;out += " V, ";out += loadvoltage2; out +=" V\n";
+    // out += "Currents:       "; out += current_mA1;out += " mA, ";out += current_mA2; out +=" mA\n";
+    outStr += "Powers(mw),Solar1,Solar2,onlyPwr,dataPwr:         ";
+    outStr += power_mW1;
+    outStr += ",";
+    outStr += power_mW2;
+    outStr += ",";
+    outStr += power_mW3;
+    outStr += ",";
+    outStr += power_mW4;
+    housekeepWrite("$Power", outStr);
+    outStr = "";
+    outStr += "Voltages(V),Solar1,Solar2,onlyPwr,dataPwr:         ";
+    outStr += busvoltage1;
+    outStr += ",";
+    outStr += busvoltage2;
+    outStr += ",";
+    outStr += busvoltage3;
+    outStr += ",";
+    outStr += busvoltage4;
+    housekeepWrite("$Voltage", outStr);
+  }
+}
+
+void housekeepWrite(String sentenceID, String data) {
+  if (!data.isEmpty()) {
+    myFileHousekeeping = SD.open(fname2, O_WRITE | O_APPEND);
+    if (myFileHousekeeping) {
+      myFileHousekeeping.print(sentenceID);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(data);
+      myFileHousekeeping.print(",");
+      myFileHousekeeping.print(curTimeStr(rtc.now()));
+      myFileHousekeeping.println("");
+      myFileHousekeeping.close();
+    } else {
+      Serial.println("Failed to open housekeeping file");
+    }
+  }
+}
+
+void tempatureWrite() {
+  myFileTempature= SD.open(fname3, O_WRITE | O_APPEND);
+  sensors_event_t humidity, temp;
+  aht.getEvent(&humidity, &temp);
+  if (myFileTempature) {
+      myFileTempature.print("$TEMPLOG");
+      myFileTempature.print(",");
+      myFileTempature.print(String(temp.temperature)); //degrees celcius
+      myFileTempature.print(",");
+      myFileTempature.print(String(humidity.relative_humidity)); //% rH
+      myFileTempature.println(",");
+      myFileTempature.println(curTimeStr(rtc.now()));
+      myFileTempature.println("");
+      myFileTempature.close();
+  } else {
+      Serial.println("Failed to open templog file");
+  }
+}
+
+void BMP390Setup() {
+  Serial.println("Starting BMP390...");
+  if (!bmp.begin_I2C()) {  // hardware I2C mode, can pass in address & alt Wire
+    //if (! bmp.begin_SPI(BMP_CS)) {  // hardware SPI mode
+    //if (! bmp.begin_SPI(BMP_CS, BMP_SCK, BMP_MISO, BMP_MOSI)) {  // software SPI mode
+    Serial.println("Could not find a valid BMP3 sensor, check wiring!");
+    housekeepWrite("%ERROR", "Could not find a valid BMP3 sensor");
+  }
+  housekeepWrite("$BMP390", "BMP390 Setup Successful");
+}
+
+void MLX90393Setup() {
+  Serial.println("Starting MLX90393...");
+  if (!sensor.begin_I2C()) {  // hardware I2C mode, can pass in address & alt Wire
+    //if (! sensor.begin_SPI(MLX90393_CS)) {  // hardware SPI mode
+    Serial.println("No sensor found ... check your wiring?");
+    housekeepWrite("%ERROR", "Could not find a valid MLX90393 sensor");
+  }
+
+  sensor.setGain(MLX90393_GAIN_1X);
+  // You can check the gain too
+  Serial.print("Gain set to: ");
+  switch (sensor.getGain()) {
+    case MLX90393_GAIN_1X:
+      Serial.println("1 x");
+      break;
+    case MLX90393_GAIN_1_33X:
+      Serial.println("1.33 x");
+      break;
+    case MLX90393_GAIN_1_67X:
+      Serial.println("1.67 x");
+      break;
+    case MLX90393_GAIN_2X:
+      Serial.println("2 x");
+      break;
+    case MLX90393_GAIN_2_5X:
+      Serial.println("2.5 x");
+      break;
+    case MLX90393_GAIN_3X:
+      Serial.println("3 x");
+      break;
+    case MLX90393_GAIN_4X:
+      Serial.println("4 x");
+      break;
+    case MLX90393_GAIN_5X:
+      Serial.println("5 x");
+      break;
+  }
+
+  // Set resolution, per axis. Aim for sensitivity of ~0.3 for all axes.
+  sensor.setResolution(MLX90393_X, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Y, MLX90393_RES_17);
+  sensor.setResolution(MLX90393_Z, MLX90393_RES_16);
+
+  // Set oversampling
+  sensor.setOversampling(MLX90393_OSR_3);
+
+  // Set digital filtering
+  sensor.setFilter(MLX90393_FILTER_5);
+  housekeepWrite("$MLX90393", "MLX90393 Setup Successful");
+}
+
+/*This method starts the RTC clock and compares it to a given fallback time  (the compliation time of the program)
+*/
+void rtcInit() {
+  if (rtc.begin()) {
+    rtc.start();
+    Serial.println("RTC is here and started");
+    Serial.println("RTC belives it is" + curTimeStr(rtc.now()));
+    Serial.println("The fallback time is" + curTimeStr(DateTime(F(__DATE__), F(__TIME__))));
+    if(rtc.now() < DateTime(F(__DATE__), F(__TIME__))) {
+      Serial.println("The RTC is earlier than the fallback time. Adjusting to the fallback time");
+      rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    } else {
+      Serial.println("The RTC is ahead of the fallback time. This is good!");
+    }
+    Serial.flush();
+  } else {
+    Serial.println("Couldn't find RTC :(, using fallback time.");
+    rtc.start();
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    Serial.println("The RTC Now thinks it is " + curTimeStr(rtc.now()));
+    Serial.flush();
+  }
+}
+
+
+/* Tries five times to read the loadcell to check the weight on it
+*/
+double readLoadCell() {
+  int retry = 0;
+  double val = 0;
+  while (retry < 5) {  // Retry up to 5 times
+    val = nau.read();
+    if (val != 0) break;  // Exit if valid reading
+    Serial.println("Load Cell read failed, retrying...");
+    retry++;
+    delay(500);  // Wait before retry
+  }
+
+  if (retry == 5) {
+    Serial.println("Load Cell failed after retries!");
+    housekeepWrite("$ERROR", "Load Cell failed after retries!");
+  }
+  return val;
+}
+
+/* Stores loadCellBufferSize values in an array so 
+you can get data from when the bird leaves*/
+void storeLoadBuffer() {
+  for (int i = loadCellBufferSize - 1; i > 0; i--) {
+    loadCellBuffer[i] = loadCellBuffer[i - 1];
+  }
+  loadCellBuffer[0] = readLoadCell();
+}
+
+/* If there is a tag on the feeder, 
+ * this returns the tag in hex code and prints it to serial
+ * Otherwise, it returns nothing and prints nothing.
+ */
+String readTag() {
+  int counter = 0;                //Read first four bytes
+  String tagNum = "";             //Current Tag on the Feeder
+  if (Serial1.available() > 0) {  //Check if RFID is Reading Anything
+    while (Serial1.available() > 0 && counter < 4) {
+      digitalWrite(led, HIGH);        //Visual indicator that Serial1 has data.
+      byte newTag = Serial1.read();   //Read first byte
+      tagNum += String(newTag, HEX);  //Make new tag
+      counter++;                      //Iterate counter
+      delay(2);                       //Slight delay
+    }
+    Serial.println("A tag has been read. It is: " + String(tagNum));
+  }
+  return tagNum;
+}
+
+/* Attempts to write read data to given file,
+  * if any data is missing defaults to default params
+  * writes error if write fails
+  */
+void printToFile(String fname, String feederName, String time, String millis, String loadCellReading, String tagNum, String readingId, String tempature, String humidity) {
+  File32 fileToWrite = SD.open(fname, O_WRITE | O_APPEND);
+  if (fileToWrite) {
+    delay(5);
+    fileToWrite.println(String(feederName) + "," + String(time) + "," + String(millis) + "," + String(loadCellReading) + "," + String(tagNum) + "," + String(readingId) + "," + String(tempature) + "," + String(humidity));
+    Serial.println(String(feederName) + "," + String(time) + "," + String(millis) + "," + String(loadCellReading) + "," + String(tagNum) + "," + String(readingId) + "," + String(tempature) + "," + String(humidity));
+    fileToWrite.sync();
+  } else {
+    Serial.println("Attempted to write to file but failed");
+    housekeepWrite("$ERROR", "Failed to write to data file");
+  }
+  fileToWrite.close();
+}
+
+/* Announces a new reading is starting and logs the buffer. (Green Rows)
+  * Then, logs the tempature and humidity reading (Red Row)
+  */
+void logFirstReading(String fname, String readingId) {
+    Serial.println("This tag is new. Starting new reading called: " + String(readingId));
+      for (int i = 0; i < loadCellBufferSize; i++) {
+        delay(5);
+        printToFile(fname,String(feederName),curTimeStr(rtc.now()),String(millis()),String(loadCellBuffer[i]),String(tagNum),String(readingId)," "," ");
+      }
+      sensors_event_t humidity, temp;
+      aht.getEvent(&humidity, &temp);
+      delay(5); //Make sure there is a reading
+      printToFile(fname,String(feederName),curTimeStr(rtc.now()),String(millis()),"NA",String(tagNum),String(readingId),String(temp.temperature),String(humidity.relative_humidity));
+  }
+
+/* While a reading is still ongoing, this method is called
+  * and logs (Yellow Rows) until the reading ends or
+  *reaches the reading cap
+  */
+void logReading(String fname, String readingId, String(readingCount)) {
+  Serial.println("Logging reading number " + String(readingCount) + " for ID: " + String(readingId));
+  printToFile(fname, String(feederName), curTimeStr(rtc.now()), String(millis()), String(readLoadCell()), String(tagNum), String(readingId), " ", " ");
+}
+
+/* Upon a reading ending (tag no longer being read), 
+  * this method logs the last reading (Red Row)
+  */
+void logLastReading(String fname, String readingId) {
+  Serial.println("The tag has left. ending reading of ID: " + String(readingId));
+  printToFile(fname, String(feederName), curTimeStr(rtc.now()), String(millis()), "NA", String(lastTagRead), String(readingId), " ", "");
+}
+
+/* This method runs every loop, first it checks if Serial1
+  * has anything in the buffer if it does it reads a tag
+  * and stores it in tagNum. If there is a tag
+  * it checks if it is a new tag. If it is
+  * it starts a reading event for that tag
+  * if its not new it checks how long it has been
+  * since last read and reads it then, otherwise nothing
+  * if nothing is read and currently in reading event, exit
+  * otherwise just store something to load buffer
+  */
+void checkRFID() {
+  tagNum = readTag();  //Checking for reading
+  if (tagNum != "") {  // Something is read
+    loopsSinceLastRead = 0;
+    if (tagNum != lastTagRead) {  //tag is a new tag
+      readingCount = 1;
+      lastTagRead = tagNum;
+      readingId = String(tagNum) + "_" + String(millis());
+      logFirstReading(fname, readingId);
+    } else if (readingCount <= maxReadingCount) {  //Tag is not new and it has been loopsBetweenReads since last read and counter not exceeded
+      readingCount++;
+      logReading(fname, readingId, String(readingCount));
+    }
+  } else if ((loopsSinceLastRead >= loopsBetweenReads * 8) && readingCount != 0) {  //Nothing is detected AND it has been time since anything has been detected
+    readingCount = 0;
+    logLastReading(fname, readingId);
+    readingId = "";
+    lastTagRead = "";
+  } else {  //Nothing is detected and loop shouldnt end, iterate loops since last read.
+    loopsSinceLastRead++;
+  }
+  delay(10);
+  storeLoadBuffer();
+}
+
 void setup(void) {
+  delay(10000);
   pinMode(led, OUTPUT);
   digitalWrite(led, 0);
   pinMode(I2C_PWR_PIN, OUTPUT);
   digitalWrite(I2C_PWR_PIN, HIGH);  // make sure I2C power is on
   // Open serial communications and wait for port to open:
-  Serial.begin(115200);
+  Serial.begin(115200); //Serial port for general info
   Serial1.begin(9600);  // serial port for RFID data
+  PCA9536BuzzSetup();
   delay(4000);  // wait for serial ports to start if they exist
 
   Serial.println("Bird feeder Wifi starting");
   delay(1000);
 
   // RTC initialization
-  if (! rtc.begin()) {
-    Serial.println("Couldn't find RTC");
-    Serial.flush();
-  } else {
-    rtc.start();
-  }
-
+ 
+  rtcInit();
   loadCellInit();
   tempHumidityInit();
+  INA219Setup();
+  BMP390Setup();
+  MLX90393Setup();
 
-  SdFile::dateTimeCallback(dateTime);  
+  SdFile::dateTimeCallback(dateTime);
   Serial.print("Initializing SD card...");
   if (!SD.begin(SD_CS)) {
     Serial.println("initialization failed!");
   } else {
     Serial.println("initialization done.");
   }
-  loadSettings("/settings.txt");  // load settings from SD card
+  loadSettings(settingFname);  // load settings from SD card
 
-  fname = findFname();
+  //Print File headings
+  fname = findFname(baseName);
   Serial.println("Filename: " + fname);
   myFileLoadCell = SD.open(fname, O_WRITE | O_CREAT);
-  if(myFileLoadCell) {
-    myFileLoadCell.println("datetime,time(ms),LoadCell,RFIDTag");
+  if (myFileLoadCell) {
+    myFileLoadCell.println("feeder,datetime,time(ms),loadCell,RFIDTag,visit,temp,humidity");
     myFileLoadCell.close();
   } else {
     Serial.println("Failed to open file");
   }
 
+  fname2 = findFname("/log");
+  Serial.println("Filename: " + fname2);
+  myFileHousekeeping = SD.open(fname2, O_WRITE | O_CREAT);
+  if (myFileHousekeeping) {
+    myFileHousekeeping.println("$sentenceID,Data,Date and Time");
+    myFileHousekeeping.close();
+  } else {
+    Serial.println("Failed to open file");
+  }
+
+  fname3 = findFname("/templog");
+  Serial.println("Filename: " + fname3);
+  myFileTempature = SD.open(fname3, O_WRITE | O_CREAT);
+  if (myFileTempature) {
+    myFileTempature.println("$sentenceID,Tempature,Humidity and Time");
+    myFileTempature.close();
+  } else {
+    Serial.println("Failed to open file");
+  }
+
   WiFi.mode(WIFI_AP_STA);
-  checkWifi(wifiMaxCheckTimes);
-  
+  checkWifi(wifiMaxCheckTimes, 500);
+
   if (!WiFi.softAP(apssid, appassword)) {
     Serial.println("failed to start softAP");
     for (;;) {
-        digitalWrite(led, 1);
-        delay(100);
-        digitalWrite(led, 0);
-        delay(100);
+      digitalWrite(led, 1);
+      delay(100);
+      digitalWrite(led, 0);
+      delay(100);
     }
   }
   Serial.print("Soft AP SSID: \"");
@@ -762,18 +1329,30 @@ void setup(void) {
   server0->on("/", handleRoot0);
   server1->on("/", handleRoot1);
   server2->on("/", handleRoot2);
-  
+
   server0->on("/fileex", handleFileExample0);
   server0->on("/download", handleDownload0);
   server0->on("/rtcTime", HTTP_GET, handleRTCTime);
 
   // Handle inputs
-  server0->on("/rtcForm", HTTP_GET, []() { handleForm(server0, "rtcValue"); });
-  server0->on("/timeZoneForm", HTTP_GET, []() { handleForm(server0, "timeZoneValue"); });
-  server0->on("/wifiSSIDForm", HTTP_GET, []() { handleForm(server0, "wifiSSIDValue"); });
-  server0->on("/wifiPasswordForm", HTTP_GET, []() { handleForm(server0, "wifiPasswordValue"); });
-  server0->on("/apSSIDForm", HTTP_GET, []() { handleForm(server0, "apSSIDValue"); });
-  server0->on("/apPasswordForm", HTTP_GET, []() { handleForm(server0, "apPasswordValue"); });
+  server0->on("/rtcForm", HTTP_GET, []() {
+    handleForm(server0, "rtcValue");
+  });
+  server0->on("/timeZoneForm", HTTP_GET, []() {
+    handleForm(server0, "timeZoneValue");
+  });
+  server0->on("/wifiSSIDForm", HTTP_GET, []() {
+    handleForm(server0, "wifiSSIDValue");
+  });
+  server0->on("/wifiPasswordForm", HTTP_GET, []() {
+    handleForm(server0, "wifiPasswordValue");
+  });
+  server0->on("/apSSIDForm", HTTP_GET, []() {
+    handleForm(server0, "apSSIDValue");
+  });
+  server0->on("/apPasswordForm", HTTP_GET, []() {
+    handleForm(server0, "apPasswordValue");
+  });
   server0->on("/restart", HTTP_POST, []() {
     handleRoot(server0, "Restarting ESP32-S3");
     ESP.restart();
@@ -790,9 +1369,22 @@ void setup(void) {
   server2->begin();
   Serial.println("HTTP server2 started");
 
-  Serial.printf("SSID: %s\n\thttp://", ssid); Serial.print(WiFi.localIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.localIP()); Serial.println(":8081");
-  Serial.printf("SSID: %s\n\thttp://", apssid); Serial.print(WiFi.softAPIP()); Serial.print(":80\n\thttp://"); Serial.print(WiFi.softAPIP()); Serial.println(":8081");
-  Serial.printf("Any of the above SSIDs\n\thttp://");Serial.print(apssid);Serial.print(".local:80\n\thttp://");Serial.print(apssid);Serial.print(".local:8081\n");
+  Serial.printf("SSID: %s\n\thttp://", ssid);
+  Serial.print(WiFi.localIP());
+  Serial.print(":80\n\thttp://");
+  Serial.print(WiFi.localIP());
+  Serial.println(":8081");
+  Serial.printf("SSID: %s\n\thttp://", apssid);
+  Serial.print(WiFi.softAPIP());
+  Serial.print(":80\n\thttp://");
+  Serial.print(WiFi.softAPIP());
+  Serial.println(":8081");
+  Serial.printf("Any of the above SSIDs\n\thttp://");
+  Serial.print(apssid);
+  Serial.print(".local:80\n\thttp://");
+  Serial.print(apssid);
+  Serial.print(".local:8081\n");
+  sequenceBuzzLED(5, 100, GRN);
 }
 
 void loop(void) {
@@ -800,98 +1392,31 @@ void loop(void) {
   server0->handleClient();
   server1->handleClient();
   server2->handleClient();
-  delay(2);//allow the cpu to switch to other tasks
-
-  checkWifi(wifiMaxCheckTimes/2, 10000); //Just cause :3
-
-  static unsigned long lastCharTime = 0; // millis of last character
-  static unsigned long tagReadWaitTime = 300;   // ms to wait before newline for RFID tag read finish
-  static unsigned long lastTagReadTime = 0;  // millis of last tag read
-  unsigned long curMillis = millis();
-  static bool newChars = false;  // true if new chars since last newline
-  static String tagNum = "";
-  static bfs::CircleBuf<loadPoint, bufLen> loadcellBuf;  // circular buffer for loadcell data
-
-  // RFID reader input on Serial1
-  if (Serial1.available()) {       // If anything comes in Serial1 (pins 0 & 1)
-    digitalWrite(led, HIGH);
-    lastCharTime = millis();
-    newChars = true;
-    byte inChar = Serial1.read();
-    tagNum += String(inChar, HEX);
-    //Serial.print(inChar, HEX);  // read it and send it out Serial (USB)
+  yield();
+  if (loopCount % loopsBetweenTimeLogs == 0) {
+    Serial.println("It is currently " + curTimeStr(rtc.now()) + "according to the RTC");
+    tempatureWrite();
+    readBatteryInfo();
   }
-
-  if(nau.available()) {
-    int32_t val = nau.read();
-    if((curMillis - lastTagReadTime) < afterReadRecordTime) {
-      myFileLoadCell = SD.open(fname, O_WRITE | O_APPEND); // vs FILE_WRITE
-      if (myFileLoadCell) {
-        Serial.print(val);
-        Serial.print(" \t\t ");
-        // close the file:
-        myFileLoadCell.println(curTimeStr(rtc.now()) + "," + String(curMillis) + "," + String(val) + ",");
-        myFileLoadCell.close();
-        Serial.print(curTimeStr(rtc.now()));
-        Serial.print("\t\t");
-        Serial.println(curMillis - lastTagReadTime);
-        // Serial.println();
-      } else {
-        // if the file didn't open, print an error:
-        Serial.println("error opening " + fname);
-      }
-    } else {  // not already saving to the SD card so save in buffer
-      loadPoint popVal;  // value removed from buffer if full
-      if(loadcellBuf.size() >= bufLen) {  // buffer full, need to remove one
-        unsigned int nRead = loadcellBuf.Read(&popVal);
-        if(nRead == 0) {
-          Serial.println("!!!! Buffer read fail!!!!");
-        }
-      }
-      loadPoint curPoint;
-      curPoint.load = val;
-      curPoint.millis = curMillis;
-      curPoint.t = rtc.now();
-      unsigned int nWrite = loadcellBuf.Write(curPoint); // add value to buffer
-      if(nWrite < 1) {
-        Serial.println("Failed to write data to buffer");
-      }
-      // Serial.print("BufSize: ");
-      // Serial.print(loadcellBuf.size());
-      // Serial.println();
+  if(loopCount % 5000 == 0) {
+     if (loopCount >= INT_MAX - 100) {
+    Serial.println("Resetting Loop Count to not exceed max int");
+    loopCount = 0;
+  }
+    DateTime now = rtc.now();
+    if(now.hour() <= 5 || now.hour() >= 22) {
+    if(now.hour() <= 5) {
+    timeToFive += 29 - (now.hour() + 24);
+    } else {
+    timeToFive = 29 - now.hour();
     }
+    Serial.println("RTC belives it is" + curTimeStr(now) + "and is going into sleep mode.");
+    esp_sleep_enable_timer_wakeup(timeToFive*1000ULL); //Sleep until 5am
+      esp_deep_sleep_start(); 
   }
-  if((curMillis - lastCharTime) > tagReadWaitTime && newChars) {
-    newChars = false;
-    //Serial.println("");
-    myFileLoadCell = SD.open(fname, O_WRITE | O_APPEND); // vs FILE_WRITE
-    myFileLoadCell.print("");  //  I really can't tell you why this is needed to work
-    // if the file opened okay, write to it:
-    if (myFileLoadCell) {
-      // write buffer values
-      loadPoint bufVal;
-      int cnt = 0;
-      uint32_t curBufLen = loadcellBuf.size();
-      Serial.println("Starting buffer save with size " + String(curBufLen));
-      for(size_t ii = 0; ii < curBufLen; ii++) {
-        uint32_t readNum = loadcellBuf.Read(&bufVal);
-        if(readNum < 1) {
-          Serial.println("buffer read fail");
-        }
-        Serial.println("saving buffer: " + String(cnt++));
-        myFileLoadCell.println(curTimeStr(bufVal.t) + "," + String(bufVal.millis) + "," + String(bufVal.load) + ",");
-      }
-      Serial.print("Writing '" + tagNum + "' to " + fname + "...");
-      // close the file:
-      myFileLoadCell.println(curTimeStr(rtc.now()) + "," + String(curMillis) + ",," + tagNum);
-      myFileLoadCell.close();
-      Serial.println("done.");
-      lastTagReadTime = curMillis; // record last time a tag was read
-      digitalWrite(led, LOW);
-  } else {
-      // if the file didn't open, print an error:
-      Serial.println("error opening " + fname);
-    }
-    tagNum = ""; // reset tagNum
   }
+  yield();
+  checkRFID();
+  yield();
+  loopCount++;
 }
